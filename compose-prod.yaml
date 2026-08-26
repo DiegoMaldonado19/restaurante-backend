@@ -1,0 +1,46 @@
+name: restaurante-backend
+
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: restaurante_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?refusing to start without MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-restaurant_db}
+      MARIADB_USER: ${MARIADB_USER:-restaurant}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?refusing to start without MARIADB_PASSWORD}
+      TZ: America/Guatemala
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    image: djmaldonado19/restaurante-backend:${IMAGE_TAG:?IMAGE_TAG is unset; the deploy writes it into .env}
+    container_name: restaurante_backend
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mariadb://mariadb:3306/${MARIADB_DATABASE:-restaurant_db}
+      SPRING_DATASOURCE_USERNAME: ${MARIADB_USER:-restaurant}
+      SPRING_DATASOURCE_PASSWORD: ${MARIADB_PASSWORD:?refusing to start without MARIADB_PASSWORD}
+      TZ: America/Guatemala
+      SPRING_MAIL_USERNAME: ${MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  mariadb_data:

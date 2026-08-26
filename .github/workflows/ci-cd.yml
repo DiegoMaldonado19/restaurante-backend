@@ -1,0 +1,146 @@
+name: CI/CD Pipeline Backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [master, stage]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  JAVA_VERSION: '25'
+  DOCKER_USERNAME: djmaldonado19
+  DOCKER_IMAGE: restaurante-backend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: test
+          MARIADB_DATABASE: restaurant_test
+          MARIADB_USER: restaurant
+          MARIADB_PASSWORD: test
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Compile, test and package
+        run: mvn -B verify
+        env:
+          SPRING_DATASOURCE_URL: jdbc:mariadb://127.0.0.1:3306/restaurant_test
+          SPRING_DATASOURCE_USERNAME: restaurant
+          SPRING_DATASOURCE_PASSWORD: test
+
+  docker-push:
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build and push production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: prod
+          push: true
+          tags: |
+            ${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${{ github.run_number }}
+            ${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push dev toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dev
+          push: true
+          tags: ${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:dev
+          cache-from: type=gha
+
+  deploy:
+    needs: docker-push
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_KEY:                ${{ secrets.EC2_SSH_KEY }}
+          SSH_KNOWN_HOSTS:        ${{ secrets.SSH_KNOWN_HOSTS }}
+          SERVER_USER:            ${{ secrets.SERVER_USER }}
+          SERVER_HOST:            ${{ secrets.SERVER_HOST }}
+          REPO_PATH:              ${{ secrets.REPO_PATH }}
+          MARIADB_ROOT_PASSWORD:  ${{ secrets.MARIADB_ROOT_PASSWORD }}
+          MARIADB_DATABASE:       ${{ secrets.MARIADB_DATABASE }}
+          MARIADB_USER:           ${{ secrets.MARIADB_USER }}
+          MARIADB_PASSWORD:       ${{ secrets.MARIADB_PASSWORD }}
+          MAIL_USERNAME:          ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD:          ${{ secrets.MAIL_PASSWORD }}
+          IMAGE_TAG:              ${{ github.run_number }}
+        run: |
+          set -eu
+
+          : "${MARIADB_ROOT_PASSWORD:?the MARIADB_ROOT_PASSWORD secret is empty; refusing to deploy}"
+          : "${MARIADB_PASSWORD:?the MARIADB_PASSWORD secret is empty; refusing to deploy}"
+
+          MARIADB_DATABASE="${MARIADB_DATABASE:-restaurant_db}"
+          MARIADB_USER="${MARIADB_USER:-restaurant}"
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+          {
+            printf 'IMAGE_TAG=%s\n'             "$IMAGE_TAG"
+            printf 'MARIADB_ROOT_PASSWORD=%s\n' "$MARIADB_ROOT_PASSWORD"
+            printf 'MARIADB_DATABASE=%s\n'      "$MARIADB_DATABASE"
+            printf 'MARIADB_USER=%s\n'          "$MARIADB_USER"
+            printf 'MARIADB_PASSWORD=%s\n'      "$MARIADB_PASSWORD"
+            printf 'MAIL_USERNAME=%s\n'         "$MAIL_USERNAME"
+            printf 'MAIL_PASSWORD=%s\n'         "$MAIL_PASSWORD"
+          } > env.deploy
+
+          scp -i ~/.ssh/deploy_key env.deploy "$SERVER_USER@$SERVER_HOST:$REPO_PATH/.env"
+
+          ssh -i ~/.ssh/deploy_key "$SERVER_USER@$SERVER_HOST" "
+              set -eu
+              cd '$REPO_PATH'
+              git pull origin master
+              docker compose -f compose-prod.yaml pull
+              docker compose -f compose-prod.yaml up -d --remove-orphans --wait --wait-timeout 180
+              docker image prune -f
+            "
