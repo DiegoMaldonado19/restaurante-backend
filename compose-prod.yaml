@@ -2,7 +2,7 @@ name: restaurante-backend
 
 services:
   mariadb:
-    image: mariadb:11
+    image: mariadb:11.8
     container_name: restaurante_mariadb
     restart: unless-stopped
     environment:
@@ -33,6 +33,8 @@ services:
       TZ: America/Guatemala
       SPRING_MAIL_USERNAME: ${MAIL_USERNAME:-}
       SPRING_MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      APP_SECURITY_JWT_SECRET: ${APP_SECURITY_JWT_SECRET:?refusing to start without APP_SECURITY_JWT_SECRET}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?refusing to start without CORS_ALLOWED_ORIGINS}
     ports:
       - "8080:8080"
     healthcheck:
