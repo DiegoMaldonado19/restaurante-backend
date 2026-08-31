@@ -30,6 +30,8 @@ public enum ErrorCode
     INSUFFICIENT_STOCK            (HttpStatus.CONFLICT,     "REMOVE_ITEM"),
     WASTE_EXCEEDS_STOCK           (HttpStatus.CONFLICT,     null),
     SUPPLY_IN_USE                 (HttpStatus.CONFLICT,     "DEACTIVATE_INSTEAD"),
+    SUPPLY_NAME_TAKEN             (HttpStatus.CONFLICT,     null),
+    SUPPLY_CATEGORY_NAME_TAKEN    (HttpStatus.CONFLICT,     null),
 
     // --- Menu y recetas -----------------------------------------------------
     DISH_UNAVAILABLE              (HttpStatus.CONFLICT,     "SUGGEST_ALTERNATIVE"),

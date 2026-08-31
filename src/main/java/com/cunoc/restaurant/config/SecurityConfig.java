@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -48,6 +49,22 @@ public class SecurityConfig
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers("/api/v1/users/me/**").authenticated()
                         .requestMatchers("/api/v1/users/**").hasRole("ADMIN")
+                        // Inventario: la aplicacion administrativa y nadie mas.
+                        .requestMatchers("/api/v1/supplies/**",
+                                         "/api/v1/supply-categories/**",
+                                         "/api/v1/stock-movements",
+                                         "/api/v1/stock-entries",
+                                         "/api/v1/stock-wastes",
+                                         "/api/v1/stock-adjustments").hasRole("ADMIN")
+                        // Clientes: el mostrador da de alta, el administrador y la caja corrigen.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/customers")
+                            .hasAnyRole("WAITER", "CASHIER")
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/customers/*")
+                            .hasAnyRole("ADMIN", "CASHIER")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/customers/*/loyalty-transactions")
+                            .hasAnyRole("ADMIN", "CASHIER")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/customers", "/api/v1/customers/*")
+                            .hasAnyRole("ADMIN", "WAITER", "CASHIER")
                         .anyRequest().authenticated())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
