@@ -2,7 +2,7 @@ name: restaurante-backend-dev
 
 services:
   mariadb:
-    image: mariadb:11
+    image: mariadb:11.8
     container_name: restaurante_mariadb_dev
     restart: unless-stopped
     environment:

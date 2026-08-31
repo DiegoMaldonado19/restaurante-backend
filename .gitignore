@@ -62,3 +62,6 @@ Thumbs.db
 
 # API validation runner deps
 scripts/
+
+# El .env.example si se versiona.
+!.env.example
