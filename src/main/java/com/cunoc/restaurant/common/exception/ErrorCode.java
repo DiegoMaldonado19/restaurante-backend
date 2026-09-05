@@ -37,6 +37,10 @@ public enum ErrorCode
     DISH_UNAVAILABLE              (HttpStatus.CONFLICT,     "SUGGEST_ALTERNATIVE"),
     RECIPE_NOT_DEFINED            (HttpStatus.CONFLICT,     "DEFINE_RECIPE"),
     DISH_IN_USE                   (HttpStatus.CONFLICT,     "DEACTIVATE_INSTEAD"),
+    DISH_NAME_TAKEN               (HttpStatus.CONFLICT,     null),
+    DISH_CATEGORY_NAME_TAKEN      (HttpStatus.CONFLICT,     null),
+    MODIFIER_NAME_TAKEN           (HttpStatus.CONFLICT,     null),
+    COMBO_NAME_TAKEN              (HttpStatus.CONFLICT,     null),
 
     // --- Mesas y cuentas ----------------------------------------------------
     INVALID_TABLE_TRANSITION      (HttpStatus.CONFLICT,     null),

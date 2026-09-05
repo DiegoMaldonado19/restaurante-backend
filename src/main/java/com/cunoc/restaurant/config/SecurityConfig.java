@@ -65,6 +65,34 @@ public class SecurityConfig
                             .hasAnyRole("ADMIN", "CASHIER")
                         .requestMatchers(HttpMethod.GET, "/api/v1/customers", "/api/v1/customers/*")
                             .hasAnyRole("ADMIN", "WAITER", "CASHIER")
+                        // Menu: la escritura y las recetas son del administrador; el salon y la
+                        // cocina solo leen el catalogo. El orden importa: las reglas concretas van
+                        // antes que los comodines /** de cierre, porque gana la primera que casa.
+                        // El menu operativo es la primera llamada de la app de operacion.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/menu")
+                            .hasAnyRole("WAITER", "KITCHEN")
+                        // Disponibilidad manual: tambien cocina ("cocina debe poder marcarlo no disponible").
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/dishes/*/availability")
+                            .hasAnyRole("ADMIN", "KITCHEN")
+                        // El catalogo se lista tambien desde cocina; la ficha y los modificadores, salon.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/dishes")
+                            .hasAnyRole("ADMIN", "WAITER", "KITCHEN")
+                        // Recetas y su historial: solo el administrador (van antes del GET de ficha).
+                        .requestMatchers(HttpMethod.GET, "/api/v1/dishes/*/recipe",
+                                                         "/api/v1/dishes/*/recipe-versions",
+                                                         "/api/v1/modifiers/*/recipe")
+                            .hasRole("ADMIN")
+                        // Lecturas de catalogo abiertas al salon: ficha, modificadores y combos.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/dishes/*",
+                                                         "/api/v1/dishes/*/modifiers",
+                                                         "/api/v1/combos", "/api/v1/combos/*",
+                                                         "/api/v1/dish-categories", "/api/v1/dish-categories/*")
+                            .hasAnyRole("ADMIN", "WAITER")
+                        // Todo lo demas de menu (altas, ediciones, bajas, recetas): solo administrador.
+                        .requestMatchers("/api/v1/dishes/**",
+                                         "/api/v1/modifiers/**",
+                                         "/api/v1/combos/**",
+                                         "/api/v1/dish-categories/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
