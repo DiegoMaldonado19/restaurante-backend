@@ -4,7 +4,12 @@ import com.cunoc.restaurant.menu.model.Dish;
 
 import java.math.BigDecimal;
 
-public record DishView(
+/**
+ * Ficha del platillo (GET /dishes/{id}): sus datos, su receta vigente, el costo de produccion
+ * y el margen sobre el precio. productionCost / marginPercent / recipe son null si aun no tiene
+ * receta vigente (costo indefinido).
+ */
+public record DishDetailView(
         Long       dishId,
         Long       dishCategoryId,
         String     categoryName,
@@ -15,12 +20,15 @@ public record DishView(
         int        prepMinutes,
         boolean    manualAvailable,
         boolean    available,
-        boolean    active)
+        BigDecimal productionCost,
+        BigDecimal marginPercent,
+        boolean    active,
+        RecipeView recipe)
 {
-    /** available = bandera manual Y stock suficiente; lo calcula MenuService (menu -> inventory). */
-    public static DishView from(Dish dish, boolean available)
+    public static DishDetailView from(Dish dish, boolean available, BigDecimal productionCost,
+                                      BigDecimal marginPercent, RecipeView recipe)
     {
-        return new DishView(
+        return new DishDetailView(
                 dish.getDishId(),
                 dish.getCategory().getDishCategoryId(),
                 dish.getCategory().getName(),
@@ -31,6 +39,9 @@ public record DishView(
                 dish.getPrepMinutes(),
                 dish.isManualAvailable(),
                 available,
-                dish.isActive());
+                productionCost,
+                marginPercent,
+                dish.isActive(),
+                recipe);
     }
 }

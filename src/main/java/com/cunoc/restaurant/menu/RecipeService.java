@@ -25,8 +25,8 @@ import java.util.function.Consumer;
  * actualiza filas: cierra la vigente (effectiveTo, current_flag = null) y abre una nueva.
  * Asi cambiar una receta hoy no altera el costo de una venta de ayer.
  *
- * El costo de produccion y la disponibilidad por stock son de la Fase 4; aqui solo se toca
- * inventory para validar que cada insumo exista.
+ * El costo de las vistas lo arma MenuService (menu -> inventory); aqui se toca inventory solo
+ * para validar que cada insumo exista.
  */
 @Service
 @RequiredArgsConstructor
@@ -38,6 +38,7 @@ public class RecipeService
     private final DishService          dishService;
     private final ModifierService      modifierService;
     private final InventoryService     inventoryService;
+    private final MenuService          menuService;
 
     // --- Lectura ------------------------------------------------------------
 
@@ -46,10 +47,8 @@ public class RecipeService
     {
         dishService.findOrFail(dishId);
 
-        var recipe = recipeRepository.findByDishDishIdAndCurrentFlagTrue(dishId)
-                .orElseThrow(() -> recipeNotFound(dishId));
-
-        return RecipeView.from(recipe, itemsOf(recipe));
+        return menuService.recipeViewFor(recipeRepository.findByDishDishIdAndCurrentFlagTrue(dishId)
+                .orElseThrow(() -> recipeNotFound(dishId)));
     }
 
     @Transactional(readOnly = true)
@@ -57,10 +56,9 @@ public class RecipeService
     {
         modifierService.findOrFail(modifierId);
 
-        var recipe = recipeRepository.findByModifierDishModifierIdAndCurrentFlagTrue(modifierId)
-                .orElseThrow(() -> recipeNotFound(modifierId));
-
-        return RecipeView.from(recipe, itemsOf(recipe));
+        return menuService.recipeViewFor(
+                recipeRepository.findByModifierDishModifierIdAndCurrentFlagTrue(modifierId)
+                        .orElseThrow(() -> recipeNotFound(modifierId)));
     }
 
     @Transactional(readOnly = true)
@@ -70,7 +68,7 @@ public class RecipeService
 
         return recipeRepository.findByDishDishIdOrderByVersionAsc(dishId)
                 .stream()
-                .map(recipe -> RecipeVersionView.from(recipe, itemsOf(recipe)))
+                .map(menuService::recipeVersionViewFor)
                 .toList();
     }
 
@@ -119,18 +117,12 @@ public class RecipeService
         recipe.setCreatedBy(CurrentUser.id());
         recipeRepository.save(recipe);
 
-        var items = request.items().stream().map(line -> newItem(recipe, line)).toList();
-        recipeItemRepository.saveAll(items);
+        recipeItemRepository.saveAll(request.items().stream().map(line -> newItem(recipe, line)).toList());
 
-        return RecipeView.from(recipe, items);
+        return menuService.recipeViewFor(recipe);
     }
 
     // --- Auxiliares ---------------------------------------------------------
-
-    private List<RecipeItem> itemsOf(Recipe recipe)
-    {
-        return recipeItemRepository.findByRecipeRecipeId(recipe.getRecipeId());
-    }
 
     private RecipeItem newItem(Recipe recipe, RecipeItemDTO line)
     {

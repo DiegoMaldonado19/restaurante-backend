@@ -10,33 +10,41 @@ import com.cunoc.restaurant.menu.dto.UpdateDishDTO;
 import com.cunoc.restaurant.menu.model.Dish;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Platillos. La disponibilidad automatica por stock y el costo de la receta llegan despues
- * (menu -> inventory); aqui vive el catalogo y la bandera manual de disponibilidad.
+ * Platillos: el catalogo y la bandera manual de disponibilidad. La disponibilidad efectiva
+ * (manual Y stock) y el costo se derivan en MenuService (menu -> inventory).
  */
 @Service
 @RequiredArgsConstructor
 @Transactional
 public class DishService
 {
-    private final DishRepository       dishRepository;
-    private final DishCategoryService  dishCategoryService;
-    private final ComboItemRepository  comboItemRepository;
+    private final DishRepository      dishRepository;
+    private final DishCategoryService dishCategoryService;
+    private final ComboItemRepository comboItemRepository;
+    private final MenuService         menuService;
 
+    /**
+     * El filtro available combina la bandera manual con el stock real, asi que se resuelve en
+     * memoria sobre la pagina (no cabe en la consulta: el stock vive en inventory). El total
+     * de la pagina es el previo al filtro.
+     */
     @Transactional(readOnly = true)
-    public Page<DishView> search(Long categoryId, String search, Boolean active, Pageable pageable)
+    public Page<DishView> search(Long categoryId, String search, Boolean active, Boolean available,
+                                 Pageable pageable)
     {
-        return dishRepository.search(categoryId, search, active, pageable).map(DishView::from);
-    }
+        var page  = dishRepository.search(categoryId, search, active, pageable);
+        var views = page.getContent().stream()
+                .map(dish -> DishView.from(dish, menuService.isAvailable(dish)))
+                .filter(view -> available == null || view.available() == available)
+                .toList();
 
-    @Transactional(readOnly = true)
-    public DishView findById(Long dishId)
-    {
-        return DishView.from(findOrFail(dishId));
+        return new PageImpl<>(views, pageable, page.getTotalElements());
     }
 
     public DishView create(CreateDishDTO request)
@@ -56,7 +64,7 @@ public class DishService
         dish.setManualAvailable(true);
         dish.setActive(true);
 
-        return DishView.from(dishRepository.save(dish));
+        return view(dishRepository.save(dish));
     }
 
     public DishView update(Long dishId, UpdateDishDTO request)
@@ -76,7 +84,7 @@ public class DishService
         dish.setImageUrl(request.imageUrl());
         dish.setPrepMinutes(request.prepMinutes());
 
-        return DishView.from(dish);
+        return view(dish);
     }
 
     public DishView changeAvailability(Long dishId, UpdateDishAvailabilityDTO request)
@@ -84,7 +92,7 @@ public class DishService
         var dish = findOrFail(dishId);
         dish.setManualAvailable(request.manualAvailable());
 
-        return DishView.from(dish);
+        return view(dish);
     }
 
     /** Baja logica. No se borra: hay comandas y facturas historicas que lo referencian. */
@@ -106,6 +114,11 @@ public class DishService
         return dishRepository.findById(dishId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.DISH_NOT_FOUND,
                                                          "No existe el platillo " + dishId + "."));
+    }
+
+    private DishView view(Dish dish)
+    {
+        return DishView.from(dish, menuService.isAvailable(dish));
     }
 
     private BusinessException nameTaken(String name)

@@ -1,6 +1,7 @@
 package com.cunoc.restaurant.menu;
 
 import com.cunoc.restaurant.menu.dto.CreateDishDTO;
+import com.cunoc.restaurant.menu.dto.DishDetailView;
 import com.cunoc.restaurant.menu.dto.DishView;
 import com.cunoc.restaurant.menu.dto.UpdateDishAvailabilityDTO;
 import com.cunoc.restaurant.menu.dto.UpdateDishDTO;
@@ -35,19 +36,21 @@ import java.net.URI;
 public class DishController
 {
     private final DishService dishService;
+    private final MenuService menuService;
 
     @GetMapping
     @Operation(summary = "Catalogo de platillos con sus filtros",
-               description = "Filtros: category_id, search y active. La disponibilidad por stock se agrega "
-                           + "cuando se enchufa el inventario.")
+               description = "Filtros: category_id, search, active y available. available combina la "
+                           + "bandera manual con el stock real y se aplica sobre la pagina.")
     @ApiResponse(responseCode = "200", description = "Pagina de platillos")
     public PagedModel<DishView> findAll(
             @RequestParam(name = "category_id", required = false) Long     categoryId,
             @RequestParam(                      required = false) String   search,
             @RequestParam(                      required = false) Boolean  active,
+            @RequestParam(                      required = false) Boolean  available,
             @ParameterObject                                      Pageable pageable)
     {
-        return new PagedModel<>(dishService.search(categoryId, search, active, pageable));
+        return new PagedModel<>(dishService.search(categoryId, search, active, available, pageable));
     }
 
     @PostMapping
@@ -66,11 +69,12 @@ public class DishController
     }
 
     @GetMapping("/{id}")
-    @Operation(summary = "Detalle del platillo")
+    @Operation(summary = "Detalle del platillo con su receta vigente, costo de produccion y margen")
+    @ApiResponse(responseCode = "200", description = "Ficha del platillo")
     @ApiResponse(responseCode = "404", description = "DISH_NOT_FOUND")
-    public DishView findById(@PathVariable Long id)
+    public DishDetailView findById(@PathVariable Long id)
     {
-        return dishService.findById(id);
+        return menuService.dishDetail(id);
     }
 
     @PutMapping("/{id}")

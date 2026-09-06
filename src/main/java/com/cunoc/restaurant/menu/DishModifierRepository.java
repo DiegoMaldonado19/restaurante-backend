@@ -9,6 +9,9 @@ public interface DishModifierRepository extends JpaRepository<DishModifier, Long
 {
     List<DishModifier> findByDishDishIdOrderByNameAsc(Long dishId);
 
+    // Solo los activos: es lo que ofrece el menu operativo.
+    List<DishModifier> findByDishDishIdAndActiveTrueOrderByNameAsc(Long dishId);
+
     boolean existsByDishDishIdAndNameIgnoreCase(Long dishId, String name);
 
     boolean existsByDishDishIdAndNameIgnoreCaseAndDishModifierIdNot(Long dishId, String name, Long dishModifierId);

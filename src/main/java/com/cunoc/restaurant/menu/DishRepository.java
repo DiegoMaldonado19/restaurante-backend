@@ -7,8 +7,13 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
+
 public interface DishRepository extends JpaRepository<Dish, Long>
 {
+    // Los platillos vivos, para armar el menu operativo (luego se filtran por disponibilidad).
+    List<Dish> findByActiveTrueOrderByNameAsc();
+
     boolean existsByNameIgnoreCase(String name);
 
     boolean existsByNameIgnoreCaseAndDishIdNot(String name, Long dishId);
