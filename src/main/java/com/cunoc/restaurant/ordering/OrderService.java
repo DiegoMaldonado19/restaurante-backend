@@ -322,7 +322,7 @@ public class OrderService
         // con MenuService.modifierBrief()
         return BigDecimal.ZERO;
     }
-
+    @Transactional()
     private TableAccount accountForUpdate(Long accountId)
     {
         return accountRepository.findByIdForUpdate(accountId)
