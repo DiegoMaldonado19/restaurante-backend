@@ -2,10 +2,11 @@ package com.cunoc.restaurant.customer;
 
 import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
-import com.cunoc.restaurant.config.RestaurantProperties;
 import com.cunoc.restaurant.customer.model.Customer;
 import com.cunoc.restaurant.customer.model.LoyaltyTransaction;
 import com.cunoc.restaurant.customer.model.LoyaltyTransactionType;
+import com.cunoc.restaurant.restaurant.RestaurantSettingService;
+import com.cunoc.restaurant.restaurant.dto.RestaurantSettingView;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,17 +32,21 @@ class CustomerServiceTest
     private final LoyaltyTransactionRepository loyaltyTransactionRepository =
             mock(LoyaltyTransactionRepository.class);
 
-    private final RestaurantProperties properties = new RestaurantProperties(
-            null, null, new RestaurantProperties.Loyalty(BigDecimal.ONE));
+    /** 1 punto por unidad de moneda, como en la fila de V2. */
+    private final RestaurantSettingService settingService = mock(RestaurantSettingService.class);
 
     private final CustomerService customerService =
-            new CustomerService(customerRepository, loyaltyTransactionRepository, properties);
+            new CustomerService(customerRepository, loyaltyTransactionRepository, settingService);
 
     private final List<LoyaltyTransaction> ledger = new ArrayList<>();
 
     @BeforeEach
     void setUp()
     {
+        when(settingService.get()).thenReturn(new RestaurantSettingView(
+                1L, new BigDecimal("12.00"), new BigDecimal("10.00"),
+                BigDecimal.ONE, new BigDecimal("0.1000")));
+
         var customer = new Customer();
         customer.setCustomerId(CUSTOMER_ID);
         customer.setFullName("Ana Lopez");

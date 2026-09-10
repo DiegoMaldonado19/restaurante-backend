@@ -3,7 +3,6 @@ package com.cunoc.restaurant.customer;
 import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
-import com.cunoc.restaurant.config.RestaurantProperties;
 import com.cunoc.restaurant.customer.dto.CreateCustomerDTO;
 import com.cunoc.restaurant.customer.dto.CustomerDetailView;
 import com.cunoc.restaurant.customer.dto.CustomerView;
@@ -12,6 +11,7 @@ import com.cunoc.restaurant.customer.dto.UpdateCustomerDTO;
 import com.cunoc.restaurant.customer.model.Customer;
 import com.cunoc.restaurant.customer.model.LoyaltyTransaction;
 import com.cunoc.restaurant.customer.model.LoyaltyTransactionType;
+import com.cunoc.restaurant.restaurant.RestaurantSettingService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -35,7 +35,7 @@ public class CustomerService
 {
     private final CustomerRepository           customerRepository;
     private final LoyaltyTransactionRepository loyaltyTransactionRepository;
-    private final RestaurantProperties         properties;
+    private final RestaurantSettingService     settingService;
 
     // --- Lo que consume billing ---------------------------------------------
 
@@ -148,13 +148,12 @@ public class CustomerService
     // --- Interno ------------------------------------------------------------
 
     /**
-     * ponytail: la tasa sale de las propiedades, que son la semilla de restaurant_setting.
-     * Cuando restaurant exponga getSettings(), esta linea pasa a leer la tabla, que es la
-     * que manda porque el administrador la edita.
+     * La tasa se lee de restaurant_setting, la tabla que el administrador edita con
+     * PUT /settings. Las propiedades del arranque quedaron como semilla y respaldo.
      */
     private BigDecimal pointsPerCurrencyUnit()
     {
-        return properties.loyalty().pointsPerCurrencyUnit();
+        return settingService.get().pointsPerCurrencyUnit();
     }
 
     private void record(Customer customer, LoyaltyTransactionType type, int points, Long invoiceId)
