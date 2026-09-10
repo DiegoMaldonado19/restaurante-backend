@@ -29,8 +29,8 @@ public record OrderItemView(
         return new OrderItemView(
                 item.getOrderItemId(),
                 item.getDishId(),
-                "DishNamePlaceholder",
-                List.of(),
+                "DishNamePlaceholder",  // Se resolverá con B2 (MenuService.dishBrief)
+                List.of(),  // Se resolverán con B2 (MenuService.modifierBrief)
                 item.getComboId(),
                 item.getQuantity(),
                 item.getUnitPrice(),
@@ -40,7 +40,7 @@ public record OrderItemView(
                 item.getSubmittedAt(),
                 item.getReadyAt(),
                 item.getDeliveredAt(),
-                false,
+                false,  // Se calculará dinámicamente con B2
                 item.getSplit() != null ? item.getSplit().getCreatedAt() : null);
     }
 }
