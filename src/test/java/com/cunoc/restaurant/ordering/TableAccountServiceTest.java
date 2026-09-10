@@ -233,7 +233,7 @@ class TableAccountServiceTest
     {
         when(tableService.findById(TABLE_ID)).thenReturn(
                 new RestaurantTableView(TABLE_ID, 1, 4, TableZone.SALON, TableStatus.OCCUPIED));
-        when(accountRepository.findByTableRestaurantTableIdAndStatusIn(TABLE_ID,
+        when(accountRepository.findByRestaurantTableIdAndStatusIn(TABLE_ID,
                 java.util.Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED)))
                 .thenReturn(Optional.empty());
 
@@ -248,7 +248,7 @@ class TableAccountServiceTest
     @Test
     void openCuentaExcediendoCapacidadFalla()
     {
-        when(accountRepository.findByTableRestaurantTableIdAndStatusIn(TABLE_ID,
+        when(accountRepository.findByRestaurantTableIdAndStatusIn(TABLE_ID,
                 java.util.Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED)))
                 .thenReturn(Optional.empty());
 

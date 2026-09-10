@@ -16,7 +16,7 @@ import java.util.Optional;
 
 public interface TableAccountRepository extends JpaRepository<TableAccount, Long>
 {
-    Optional<TableAccount> findByTableRestaurantTableIdAndStatusIn(
+    Optional<TableAccount> findByRestaurantTableIdAndStatusIn(
             Long tableId, Collection<AccountStatus> statuses);
 
     @Query("""

@@ -70,7 +70,7 @@ public class TableAccountService
             throw new BusinessException(ErrorCode.TABLE_CAPACITY_EXCEEDED,
                     "La mesa " + table.restaurantTableId() + " tiene capacidad para " + table.capacity() + " comensales, se solicitaron " + request.guestCount() + ".");
 
-        if (accountRepository.findByTableRestaurantTableIdAndStatusIn(request.tableId(),
+        if (accountRepository.findByRestaurantTableIdAndStatusIn(request.tableId(),
                         Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED)).isPresent())
             throw new BusinessException(ErrorCode.ACCOUNT_ALREADY_OPEN,
                     "Ya existe una cuenta abierta o lista para cobro en la mesa " + table.restaurantTableId() + ".");
