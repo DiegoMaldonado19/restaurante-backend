@@ -1,0 +1,320 @@
+package com.cunoc.restaurant.ordering;
+
+import com.cunoc.restaurant.common.enums.TableStatus;
+import com.cunoc.restaurant.common.exception.BusinessException;
+import com.cunoc.restaurant.common.exception.ErrorCode;
+import com.cunoc.restaurant.inventory.InventoryService;
+import com.cunoc.restaurant.inventory.dto.SupplyConsumption;
+import com.cunoc.restaurant.menu.MenuService;
+import com.cunoc.restaurant.ordering.dto.*;
+import com.cunoc.restaurant.ordering.model.AccountStatus;
+import com.cunoc.restaurant.ordering.model.OrderItem;
+import com.cunoc.restaurant.ordering.model.OrderItemModifier;
+import com.cunoc.restaurant.ordering.model.OrderItemStatus;
+import com.cunoc.restaurant.ordering.model.OrderTicket;
+import com.cunoc.restaurant.ordering.model.TableAccount;
+import com.cunoc.restaurant.restaurant.RestaurantTableService;
+import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
+import com.cunoc.restaurant.common.enums.TableZone;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Pruebas del servicio de comandas: envío, ciclo de vida de ítems y cola de cocina.
+ */
+class OrderServiceTest
+{
+    private static final Long ACCOUNT_ID = 1L;
+    private static final Long TABLE_ID = 10L;
+    private static final Long WAITER_ID = 5L;
+    private static final Long DISH_ID = 100L;
+    private static final Long ITEM_ID = 200L;
+
+    private final TableAccountRepository accountRepository = mock(TableAccountRepository.class);
+    private final OrderTicketRepository ticketRepository = mock(OrderTicketRepository.class);
+    private final OrderItemRepository itemRepository = mock(OrderItemRepository.class);
+    private final OrderItemModifierRepository modifierRepository = mock(OrderItemModifierRepository.class);
+    private final MenuService menuService = mock(MenuService.class);
+    private final InventoryService inventoryService = mock(InventoryService.class);
+    private final RestaurantTableService tableService = mock(RestaurantTableService.class);
+
+    private final OrderService orderService =
+            new OrderService(accountRepository, ticketRepository, itemRepository, modifierRepository,
+                            menuService, inventoryService, tableService);
+
+    private TableAccount account;
+    private OrderItem item;
+
+    @BeforeEach
+    void setUp()
+    {
+        // Mock security context
+        var jwt = mock(Jwt.class);
+        when(jwt.getSubject()).thenReturn(String.valueOf(WAITER_ID));
+        var auth = new UsernamePasswordAuthenticationToken(jwt, null,
+                List.of(new SimpleGrantedAuthority("ROLE_WAITER")));
+        SecurityContextHolder.getContext().setAuthentication(auth);
+
+        account = new TableAccount();
+        account.setTableAccountId(ACCOUNT_ID);
+        account.setRestaurantTableId(TABLE_ID);
+        account.setWaiterId(WAITER_ID);
+        account.setStatus(AccountStatus.OPEN);
+        account.setOpenedAt(LocalDateTime.now());
+
+        item = new OrderItem();
+        item.setOrderItemId(ITEM_ID);
+        item.setDishId(DISH_ID);
+        item.setQuantity(2);
+        item.setUnitPrice(new BigDecimal("25.00"));
+        item.setUnitCost(new BigDecimal("10.00"));
+        item.setStatus(OrderItemStatus.RECEIVED);
+        item.setSubmittedAt(LocalDateTime.now());
+
+        when(accountRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(itemRepository.findById(ITEM_ID)).thenReturn(Optional.of(item));
+        when(itemRepository.save(any(OrderItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(ticketRepository.save(any(OrderTicket.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(modifierRepository.save(any(OrderItemModifier.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(modifierRepository.findByOrderItemOrderItemId(anyLong())).thenReturn(List.of());
+
+        // Mock de explodeRecipe y registerSaleConsumption
+        when(menuService.explodeRecipe(any())).thenReturn(List.of(new SupplyConsumption(1L, BigDecimal.TEN)));
+        when(menuService.productionCost(DISH_ID)).thenReturn(new BigDecimal("10.00"));
+    }
+
+    // --- Enviar comanda ------------------------------------------------------
+
+    @Test
+    void submitCreaTicketYItems()
+    {
+        var line = new com.cunoc.restaurant.ordering.dto.OrderLineDTO(DISH_ID, 2, List.of());
+        var request = new SubmitOrderDTO(List.of(line));
+
+        var result = orderService.submit(ACCOUNT_ID, request);
+
+        assertThat(result).isNotNull();
+        assertThat(result.accountId()).isEqualTo(ACCOUNT_ID);
+        verify(inventoryService).registerSaleConsumption(any(), anyLong(), anyLong());
+    }
+
+    @Test
+    void submitConCuentaBillRequestedVuelveAOccupied()
+    {
+        account.setStatus(AccountStatus.BILL_REQUESTED);
+
+        var line = new com.cunoc.restaurant.ordering.dto.OrderLineDTO(DISH_ID, 1, List.of());
+        var request = new SubmitOrderDTO(List.of(line));
+
+        orderService.submit(ACCOUNT_ID, request);
+
+        assertThat(account.getStatus()).isEqualTo(AccountStatus.OPEN);
+        verify(tableService).transitionTo(TABLE_ID, TableStatus.OCCUPIED);
+    }
+
+    @Test
+    void submitConCuentaCerradaFalla()
+    {
+        account.setStatus(AccountStatus.CLOSED);
+
+        var line = new com.cunoc.restaurant.ordering.dto.OrderLineDTO(DISH_ID, 1, List.of());
+        var request = new SubmitOrderDTO(List.of(line));
+
+        assertThatThrownBy(() -> orderService.submit(ACCOUNT_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ACCOUNT_NOT_OPEN);
+    }
+
+    // --- Máquina de estados del ítem -----------------------------------------
+
+    @Test
+    void itemRecibidoPuedeIrAPreparacion()
+    {
+        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.IN_PREPARATION);
+
+        var result = orderService.updateStatus(ITEM_ID, request);
+
+        assertThat(result.status().name()).isEqualTo("IN_PREPARATION");
+    }
+
+    @Test
+    void itemPreparacionPuedeIrAReady()
+    {
+        item.setStatus(OrderItemStatus.IN_PREPARATION);
+
+        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.READY);
+
+        var result = orderService.updateStatus(ITEM_ID, request);
+
+        assertThat(result.status().name()).isEqualTo("READY");
+    }
+
+    @Test
+    void itemReadyPuedeIrADelivered()
+    {
+        item.setStatus(OrderItemStatus.READY);
+
+        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.DELIVERED);
+
+        var result = orderService.updateStatus(ITEM_ID, request);
+
+        assertThat(result.status().name()).isEqualTo("DELIVERED");
+        assertThat(result.deliveredAt()).isNotNull();
+    }
+
+    @Test
+    void itemRecibidoNoPuedeIrADirectamente()
+    {
+        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.DELIVERED);
+
+        assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.INVALID_ORDER_ITEM_TRANSITION);
+    }
+
+    @Test
+    void itemEntregadoNoPuedeCambiarEstado()
+    {
+        item.setStatus(OrderItemStatus.DELIVERED);
+
+        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.IN_PREPARATION);
+
+        assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_ALREADY_DELIVERED);
+    }
+
+    @Test
+    void itemCanceladoNoPuedeCambiarEstado()
+    {
+        item.setStatus(OrderItemStatus.CANCELLED);
+
+        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.READY);
+
+        assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_ALREADY_CANCELLED);
+    }
+
+    // --- Editar ítem ---------------------------------------------------------
+
+    @Test
+    void updateItemRecibidoFunciona()
+    {
+        var request = new UpdateOrderItemDTO(3, null, "Sin cebolla");
+
+        var result = orderService.update(ITEM_ID, request);
+
+        assertThat(result.quantity()).isEqualTo(3);
+        assertThat(result.note()).isEqualTo("Sin cebolla");
+    }
+
+    @Test
+    void updateItemEnPreparacionNoPermitido()
+    {
+        item.setStatus(OrderItemStatus.IN_PREPARATION);
+
+        var request = new UpdateOrderItemDTO(3, null, null);
+
+        assertThatThrownBy(() -> orderService.update(ITEM_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_IN_PREPARATION);
+    }
+
+    // --- Eliminar ítem -------------------------------------------------------
+
+    @Test
+    void deleteItemRecibidoDevuelveStock()
+    {
+        orderService.delete(ITEM_ID);
+
+        verify(inventoryService).reverseSaleConsumption(eq(ITEM_ID), eq(WAITER_ID));
+        verify(itemRepository).delete(item);
+    }
+
+    @Test
+    void deleteItemEnPreparacionNoPermitido()
+    {
+        item.setStatus(OrderItemStatus.IN_PREPARATION);
+
+        assertThatThrownBy(() -> orderService.delete(ITEM_ID))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_IN_PREPARATION);
+    }
+
+    // --- Marcar no disponible ------------------------------------------------
+
+    @Test
+    void markUnavailableDevuelveStock()
+    {
+        orderService.markUnavailable(ITEM_ID);
+
+        assertThat(item.getStatus()).isEqualTo(OrderItemStatus.UNAVAILABLE);
+        verify(inventoryService).reverseSaleConsumption(eq(ITEM_ID), eq(WAITER_ID));
+    }
+
+    @Test
+    void markUnavailableEnPreparacionNoPermitido()
+    {
+        item.setStatus(OrderItemStatus.IN_PREPARATION);
+
+        assertThatThrownBy(() -> orderService.markUnavailable(ITEM_ID))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_IN_PREPARATION);
+    }
+
+    // --- Cancelar ítem -------------------------------------------------------
+
+    @Test
+    void cancelItemNoDevuelveStock()
+    {
+        var request = new CancelOrderItemDTO("Cliente no quiere");
+
+        orderService.cancel(ITEM_ID, request);
+
+        assertThat(item.getStatus()).isEqualTo(OrderItemStatus.CANCELLED);
+        assertThat(item.getCancellationReason()).isEqualTo("Cliente no quiere");
+        verify(inventoryService, never()).reverseSaleConsumption(anyLong(), anyLong());
+    }
+
+    @Test
+    void cancelItemYaCanceladoFalla()
+    {
+        item.setStatus(OrderItemStatus.CANCELLED);
+
+        var request = new CancelOrderItemDTO("Motivo");
+
+        assertThatThrownBy(() -> orderService.cancel(ITEM_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_ALREADY_CANCELLED);
+    }
+}
