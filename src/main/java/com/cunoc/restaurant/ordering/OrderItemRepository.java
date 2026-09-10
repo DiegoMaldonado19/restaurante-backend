@@ -4,7 +4,9 @@ import com.cunoc.restaurant.ordering.model.OrderItem;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -34,6 +36,11 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long>
                                 @Param("waiterId") Long waiterId,
                                 Pageable pageable);
 
-    @Query("SELECT i FROM OrderItem i WHERE i.orderItemId = :id FOR UPDATE")
+    /**
+     * Lectura para escribir el item. FOR UPDATE no va en el HQL: Hibernate lo agrega
+     * al SQL a partir de @Lock, igual que en TableAccountRepository y SupplyRepository.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT i FROM OrderItem i WHERE i.orderItemId = :id")
     Optional<OrderItem> findByIdForUpdate(@Param("id") Long id);
 }
