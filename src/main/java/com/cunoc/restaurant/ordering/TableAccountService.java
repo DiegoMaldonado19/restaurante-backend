@@ -258,10 +258,13 @@ public class TableAccountService
             itemRepository.save(item);
         });
 
-        // Eliminar la sub-cuenta (si fue facturada, DataIntegrityViolationException -> 409)
+        // Eliminar la sub-cuenta (si fue facturada, DataIntegrityViolationException -> 409).
+        // El flush fuerza el DELETE dentro del try: si se dejara para el commit, la violacion
+        // de fk_invoice_split saldria despues del catch y el cliente recibiria 500, no 409.
         try
         {
             splitRepository.delete(split);
+            splitRepository.flush();
             log.info("Sub-cuenta {} eliminada.", splitId);
         }
         catch (DataIntegrityViolationException e)
