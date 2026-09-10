@@ -29,8 +29,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+
+import org.springframework.dao.DataIntegrityViolationException;
 
 /**
  * Pruebas de cuentas de mesa: apertura, división, fusión y cancelación.
@@ -224,6 +228,35 @@ class TableAccountServiceTest
                 .isInstanceOf(BusinessException.class)
                 .extracting(ex -> ((BusinessException) ex).getErrorCode())
                 .isEqualTo(ErrorCode.ACCOUNT_NOT_OPEN);
+    }
+
+    @Test
+    void deleteSplitYaFacturadaLanza409()
+    {
+        // La FK fk_invoice_split dispara DataIntegrityViolationException al hacer flush
+        // del DELETE: el servicio la traduce a 409 SPLIT_ALREADY_INVOICED.
+        var split = new AccountSplit();
+        split.setAccountSplitId(1L);
+        split.setAccount(account);
+
+        when(splitRepository.findById(1L)).thenReturn(Optional.of(split));
+        when(itemRepository.findBySplitAccountSplitId(1L)).thenReturn(List.of());
+        // La FK no se dispara en delete() (solo encola el DELETE) sino en flush(), cuando
+        // el DELETE llega a la BD y viola fk_invoice_split. Es exactamente el escenario
+        // que el flush() dentro del try convierte en 409 en vez de 500 en el commit.
+        doThrow(new DataIntegrityViolationException("fk_invoice_split"))
+                .when(splitRepository).flush();
+
+        assertThatThrownBy(() -> accountService.deleteSplit(1L))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.SPLIT_ALREADY_INVOICED);
+
+        // El flush debe ir despues del delete: es lo que fuerza la FK a dispararse
+        // dentro del try/catch en vez de en el commit (donde daria 500, no 409).
+        var calls = inOrder(splitRepository);
+        calls.verify(splitRepository).delete(split);
+        calls.verify(splitRepository).flush();
     }
 
     // --- Abrir cuenta --------------------------------------------------------
