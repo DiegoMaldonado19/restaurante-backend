@@ -93,6 +93,45 @@ public class SecurityConfig
                                          "/api/v1/modifiers/**",
                                          "/api/v1/combos/**",
                                          "/api/v1/dish-categories/**").hasRole("ADMIN")
+                        // Mesas y configuracion: lecturas A/M/C; transicion manual A/M;
+                        // alta, edicion y baja solo admin. El PATCH concreto va antes que
+                        // los comodines de escritura para que gane la regla especifica.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/tables", "/api/v1/tables/*")
+                            .hasAnyRole("ADMIN", "WAITER", "CASHIER")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/tables/*/status")
+                            .hasAnyRole("ADMIN", "WAITER")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/tables").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/tables/*").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/tables/*").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/settings")
+                            .hasAnyRole("ADMIN", "WAITER", "CASHIER")
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/settings").hasRole("ADMIN")
+                        // Cuentas: lectura A/M/C; operaciones de mesero (abrir, transferir,
+                        // fusionar, dividir, rondas); anulacion excepcional solo admin.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/accounts", "/api/v1/accounts/*")
+                            .hasAnyRole("ADMIN", "WAITER", "CASHIER")
+                        .requestMatchers("/api/v1/accounts/*/cancellations").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/accounts",
+                                                         "/api/v1/accounts/*/transfers",
+                                                         "/api/v1/accounts/*/merges",
+                                                         "/api/v1/accounts/*/splits",
+                                                         "/api/v1/accounts/*/orders")
+                            .hasRole("WAITER")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/accounts/*/status")
+                            .hasRole("WAITER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/account-splits/*")
+                            .hasRole("WAITER")
+                        // Comandas: cocina y mesero; la cancelacion excepcional solo admin.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/orders", "/api/v1/orders/*")
+                            .hasAnyRole("WAITER", "KITCHEN")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/order-items/*/status")
+                            .hasAnyRole("WAITER", "KITCHEN")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/order-items/*/unavailabilities")
+                            .hasRole("KITCHEN")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/order-items/*/cancellations")
+                            .hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/order-items/*").hasRole("WAITER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/order-items/*").hasRole("WAITER")
                         .anyRequest().authenticated())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
