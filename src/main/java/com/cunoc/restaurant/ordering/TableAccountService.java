@@ -300,9 +300,26 @@ public class TableAccountService
         account.setCancellationReason(request.reason());
         account.setClosedAt(LocalDateTime.now());
         accountRepository.save(account);
-
         tableService.transitionTo(account.getRestaurantTableId(), TableStatus.FREE);
         log.info("Cuenta {} anulada. Motivo: {}", accountId, request.reason());
+
+        return findById(accountId);
+    }
+
+    public TableAccountView close(Long accountId)
+    {
+        var account = findAccountForUpdate(accountId);
+
+        if (account.getStatus() != AccountStatus.OPEN && account.getStatus() != AccountStatus.BILL_REQUESTED)
+            throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
+                    "Solo se pueden facturar cuentas abiertas o listas para cobro. Estado actual: " + account.getStatus() + ".");
+
+        account.setStatus(AccountStatus.CLOSED);
+        account.setClosedAt(LocalDateTime.now());
+        accountRepository.save(account);
+
+        tableService.transitionTo(account.getRestaurantTableId(), TableStatus.FREE);
+        log.info("Cuenta {} cerrada por facturación.", accountId);
 
         return findById(accountId);
     }

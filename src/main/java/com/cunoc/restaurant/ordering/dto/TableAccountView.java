@@ -21,6 +21,7 @@ public record TableAccountView(
         SplitsInfo splits,
         List<OrderTicketView> tickets,
         BigDecimal runningTotal,
+        Long waiterId,
         String waiterName)
 {
     public record SplitsInfo(int count, BigDecimal totalAmount) {}
@@ -42,6 +43,7 @@ public record TableAccountView(
                         .map(OrderTicketView::from)
                         .collect(Collectors.toList()),
                 total,
+                account.getWaiterId(),
                 "Waiter#" + account.getWaiterId());
     }
 
