@@ -1,0 +1,1664 @@
+{
+  "info": {
+    "name": "Restaurante · cadena completa del negocio",
+    "description": "Recorre el ciclo entero: insumo -> receta -> platillo -> mesa -> comanda -> cocina -> entrega -> cobro -> cuadre de caja. Verifica el descuento automatico de inventario, el costo calculado desde la receta, la regla de la caja abierta, la propina, la redencion de puntos y las reglas por rol. Cada corrida crea sus propios datos, asi que se puede repetir sobre la misma base.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Datos unicos por corrida: la coleccion se puede repetir sobre la misma base.",
+          "if (!pm.collectionVariables.get('run_seed')) {",
+          "  const seed = Date.now() % 100000;",
+          "  pm.collectionVariables.set('run_seed', seed);",
+          "  pm.collectionVariables.set('table_number', 900 + (seed % 99));",
+          "  pm.collectionVariables.set('customer_phone', String(50000000 + seed));",
+          "  pm.collectionVariables.set('today', new Date().toISOString().slice(0, 10));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    }
+  ],
+  "item": [
+    {
+      "name": "Login admin",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('admin_token', b.access_token);",
+              "pm.test('rol ADMIN', () => pm.expect(b.role).to.eql('ADMIN'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/auth/login",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "auth",
+            "login"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"username\": \"admin\", \"password\": \"Admin123!\"}"
+        }
+      }
+    },
+    {
+      "name": "Alta de categoria de insumo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('category_id', b.supply_category_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/supply-categories",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "supply-categories"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"QA {{$timestamp}}\"}"
+        }
+      }
+    },
+    {
+      "name": "Alta de insumo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('supply_id', b.supply_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/supplies",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "supplies"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"Insumo QA {{$timestamp}}\", \"measure_unit\": \"GRAM\", \"supply_category_id\": \"{{category_id}}\", \"unit_cost\": 0.08, \"min_stock\": 100}"
+        }
+      }
+    },
+    {
+      "name": "Entrada de mercaderia 10000 g",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.test('el kardex registra la compra', () => pm.expect(b.movement_type).to.eql('PURCHASE'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/stock-entries",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "stock-entries"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"supply_id\": \"{{supply_id}}\", \"quantity\": 10000, \"purchase_cost\": 0.08, \"entry_date\": \"{{today}}\"}"
+        }
+      }
+    },
+    {
+      "name": "Alta de categoria de platillo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('dish_category_id', b.dish_category_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/dish-categories",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "dish-categories"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"Fuertes QA {{$timestamp}}\", \"display_order\": 1}"
+        }
+      }
+    },
+    {
+      "name": "Alta de platillo a Q50",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('dish_id', b.dish_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/dishes",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "dishes"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"dish_category_id\": \"{{dish_category_id}}\", \"name\": \"Platillo QA {{$timestamp}}\", \"description\": \"Creado por newman\", \"sale_price\": 50.0, \"prep_minutes\": 10}"
+        }
+      }
+    },
+    {
+      "name": "Receta: 150 g por platillo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('costo = 150 x 0.08 = 12', () => pm.expect(Number(b.production_cost)).to.eql(12));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/dishes/{{dish_id}}/recipe",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "dishes",
+            "{{dish_id}}",
+            "recipe"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"items\": [{\"supply_id\": \"{{supply_id}}\", \"quantity\": 150}]}"
+        }
+      }
+    },
+    {
+      "name": "El costo y el margen se calculan solos",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('costo de produccion Q12', () => pm.expect(Number(b.production_cost)).to.eql(12));",
+              "pm.test('margen 76%', () => pm.expect(Number(b.margin_percent)).to.eql(76));",
+              "pm.test('disponible por stock', () => pm.expect(b.available).to.be.true);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/dishes/{{dish_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "dishes",
+            "{{dish_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Alta de mesa en terraza",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('table_id', b.restaurant_table_id);",
+              "pm.test('zona TERRACE (no TERRAZA)', () => pm.expect(b.zone).to.eql('TERRACE'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/tables",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "tables"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"table_number\": \"{{table_number}}\", \"capacity\": 4, \"zone\": \"TERRACE\", \"status\": \"FREE\"}"
+        }
+      }
+    },
+    {
+      "name": "Alta de mesero",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('waiter_user', b.username);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/users",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "users"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"full_name\": \"Mesero QA\", \"username\": \"qa_waiter_{{$timestamp}}\", \"password\": \"Passw0rd!\", \"role\": \"WAITER\"}"
+        }
+      }
+    },
+    {
+      "name": "Alta de cocina",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('kitchen_user', b.username);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/users",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "users"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"full_name\": \"Cocina QA\", \"username\": \"qa_kitchen_{{$timestamp}}\", \"password\": \"Passw0rd!\", \"role\": \"KITCHEN\"}"
+        }
+      }
+    },
+    {
+      "name": "Alta de cajero",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('cashier_user', b.username);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/users",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "users"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"full_name\": \"Cajero QA\", \"username\": \"qa_cashier_{{$timestamp}}\", \"password\": \"Passw0rd!\", \"role\": \"CASHIER\"}"
+        }
+      }
+    },
+    {
+      "name": "Login mesero",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('waiter_token', b.access_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/auth/login",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "auth",
+            "login"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"username\": \"{{waiter_user}}\", \"password\": \"Passw0rd!\"}"
+        }
+      }
+    },
+    {
+      "name": "Login cocina",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('kitchen_token', b.access_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/auth/login",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "auth",
+            "login"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"username\": \"{{kitchen_user}}\", \"password\": \"Passw0rd!\"}"
+        }
+      }
+    },
+    {
+      "name": "Login cajero",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('cashier_token', b.access_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/auth/login",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "auth",
+            "login"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"username\": \"{{cashier_user}}\", \"password\": \"Passw0rd!\"}"
+        }
+      }
+    },
+    {
+      "name": "Stock antes de la comanda",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('stock_before', Number(b.supply.current_stock));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/supplies/{{supply_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "supplies",
+            "{{supply_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "El mesero abre la cuenta",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('account_id', b.table_account_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{waiter_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"table_id\": \"{{table_id}}\", \"guest_count\": 2}"
+        }
+      }
+    },
+    {
+      "name": "El mesero envia la comanda",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('ticket_id', b.order_ticket_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{waiter_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/orders",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "orders"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"items\": [{\"dish_id\": \"{{dish_id}}\", \"quantity\": 2}]}"
+        }
+      }
+    },
+    {
+      "name": "El inventario baja solo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "const antes = Number(pm.collectionVariables.get('stock_before'));",
+              "pm.test('2 platillos x 150 g = 300 g menos', () => pm.expect(antes - Number(b.supply.current_stock)).to.eql(300));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{admin_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/supplies/{{supply_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "supplies",
+            "{{supply_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "La comanda llega a cocina con su precio congelado",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('order_item_id', b.items[0].order_item_id);",
+              "pm.test('precio de venta congelado en Q50', () => pm.expect(Number(b.items[0].unit_price)).to.eql(50));",
+              "pm.test('costo congelado en Q12', () => pm.expect(Number(b.items[0].unit_cost)).to.eql(12));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{kitchen_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/orders/{{ticket_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "orders",
+            "{{ticket_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Cocina: recibido -> en preparacion",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{kitchen_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/order-items/{{order_item_id}}/status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "order-items",
+            "{{order_item_id}}",
+            "status"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\": \"IN_PREPARATION\"}"
+        }
+      }
+    },
+    {
+      "name": "Cocina: en preparacion -> listo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{kitchen_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/order-items/{{order_item_id}}/status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "order-items",
+            "{{order_item_id}}",
+            "status"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\": \"READY\"}"
+        }
+      }
+    },
+    {
+      "name": "Transicion invalida: listo -> en preparacion",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+              "const b = pm.response.json();",
+              "pm.test('INVALID_ORDER_ITEM_TRANSITION', () => pm.expect(b.error_code).to.eql('INVALID_ORDER_ITEM_TRANSITION'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{kitchen_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/order-items/{{order_item_id}}/status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "order-items",
+            "{{order_item_id}}",
+            "status"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\": \"IN_PREPARATION\"}"
+        }
+      }
+    },
+    {
+      "name": "El mesero entrega el platillo",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{waiter_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/order-items/{{order_item_id}}/status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "order-items",
+            "{{order_item_id}}",
+            "status"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\": \"DELIVERED\"}"
+        }
+      }
+    },
+    {
+      "name": "El mesero marca la cuenta lista para cobro",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{waiter_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "status"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\": \"BILL_REQUESTED\"}"
+        }
+      }
+    },
+    {
+      "name": "REGLA DE CAJA: no se puede cobrar sin turno abierto",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+              "const b = pm.response.json();",
+              "pm.test('CASH_SHIFT_NOT_OPEN', () => pm.expect(b.error_code).to.eql('CASH_SHIFT_NOT_OPEN'));",
+              "pm.test('sugiere abrir turno', () => pm.expect(b.suggested_action).to.eql('OPEN_CASH_SHIFT'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/invoices",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "invoices"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"payments\": [{\"method\": \"CASH\", \"amount\": 112.0}]}"
+        }
+      }
+    },
+    {
+      "name": "SEGURIDAD: cocina no puede abrir caja",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{kitchen_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/cash-shifts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "cash-shifts"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"opening_balance\": 500.0}"
+        }
+      }
+    },
+    {
+      "name": "SEGURIDAD: cocina no puede facturar",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{kitchen_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/invoices",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "invoices"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"payments\": [{\"method\": \"CASH\", \"amount\": 1.0}]}"
+        }
+      }
+    },
+    {
+      "name": "El cajero abre turno con Q500",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('shift_id', b.cash_shift_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/cash-shifts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "cash-shifts"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"opening_balance\": 500.0}"
+        }
+      }
+    },
+    {
+      "name": "El saldo inicial queda en el historial",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('hay un OPENING_BALANCE', () => pm.expect(b.filter(m => m.movement_type === 'OPENING_BALANCE')).to.have.lengthOf(1));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/cash-shifts/{{shift_id}}/movements",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "cash-shifts",
+            "{{shift_id}}",
+            "movements"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Alta de cliente de fidelizacion",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('customer_id', b.customer_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{waiter_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/customers",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "customers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"full_name\": \"Cliente QA\", \"phone\": \"{{customer_phone}}\"}"
+        }
+      }
+    },
+    {
+      "name": "Precuenta: subtotal, impuesto y propina sugerida",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('subtotal Q100', () => pm.expect(Number(b.subtotal)).to.eql(100));",
+              "pm.test('impuesto 12% = Q12', () => pm.expect(Number(b.tax_amount)).to.eql(12));",
+              "pm.test('propina sugerida 10% = Q10', () => pm.expect(Number(b.suggested_tip_amount)).to.eql(10));",
+              "pm.test('total Q112', () => pm.expect(Number(b.total)).to.eql(112));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/bill-preview",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "bill-preview"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Cobro con propina de Q15",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.collectionVariables.set('invoice_id', b.invoice_id);",
+              "pm.test('correlativo asignado', () => pm.expect(b.invoice_number).to.be.above(0));",
+              "pm.test('la propina entra en la factura', () => pm.expect(Number(b.tip_amount)).to.eql(15));",
+              "pm.test('total = 100 + 12 + 15', () => pm.expect(Number(b.total)).to.eql(127));",
+              "pm.test('acredita puntos por el consumo', () => pm.expect(b.accrued_points).to.eql(100));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/invoices",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "invoices"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"payments\": [{\"method\": \"CASH\", \"amount\": 127.0}], \"customer_id\": \"{{customer_id}}\", \"tip_amount\": 15.0}"
+        }
+      }
+    },
+    {
+      "name": "La propina va al turno como movimiento aparte",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "const tipo = t => b.filter(m => m.movement_type === t);",
+              "pm.test('hay una venta en efectivo de Q112', () => pm.expect(Number(tipo('CASH_SALE')[0].amount)).to.eql(112));",
+              "pm.test('hay una propina en efectivo de Q15', () => pm.expect(Number(tipo('CASH_TIP')[0].amount)).to.eql(15));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/cash-shifts/{{shift_id}}/movements",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "cash-shifts",
+            "{{shift_id}}",
+            "movements"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Una cuenta no se puede facturar dos veces",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+              "const b = pm.response.json();",
+              "pm.test('ACCOUNT_ALREADY_INVOICED', () => pm.expect(b.error_code).to.eql('ACCOUNT_ALREADY_INVOICED'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/invoices",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "invoices"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"payments\": [{\"method\": \"CASH\", \"amount\": 127.0}]}"
+        }
+      }
+    },
+    {
+      "name": "Calificacion del servicio",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const b = pm.response.json();",
+              "pm.test('queda asociada al mesero', () => pm.expect(b.waiter_id).to.be.above(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/invoices/{{invoice_id}}/service-ratings",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "invoices",
+            "{{invoice_id}}",
+            "service-ratings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"score\": 5, \"comment_text\": \"Excelente\"}"
+        }
+      }
+    },
+    {
+      "name": "Cierre de turno con cuadre exacto",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('esperado = 500 + 112 + 15', () => pm.expect(Number(b.expected_cash)).to.eql(627));",
+              "pm.test('sin diferencia', () => pm.expect(Number(b.difference)).to.eql(0));",
+              "pm.test('el turno queda cerrado', () => pm.expect(b.status).to.eql('CLOSED'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{cashier_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/cash-shifts/{{shift_id}}/closings",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "cash-shifts",
+            "{{shift_id}}",
+            "closings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"counted_cash\": 627.0}"
+        }
+      }
+    }
+  ]
+}

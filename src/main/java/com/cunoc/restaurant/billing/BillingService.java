@@ -2,10 +2,10 @@ package com.cunoc.restaurant.billing;
 
 import com.cunoc.restaurant.billing.dto.BillPreviewView;
 import com.cunoc.restaurant.billing.dto.IssueInvoiceDTO;
+import com.cunoc.restaurant.billing.dto.PaymentDTO;
 import com.cunoc.restaurant.billing.dto.InvoiceView;
 import com.cunoc.restaurant.billing.dto.RateServiceDTO;
 import com.cunoc.restaurant.billing.dto.ServiceRatingView;
-import com.cunoc.restaurant.billing.dto.SplitPreviewView;
 import com.cunoc.restaurant.billing.dto.VoidInvoiceDTO;
 import com.cunoc.restaurant.billing.model.Invoice;
 import com.cunoc.restaurant.billing.model.InvoicePayment;
@@ -24,8 +24,8 @@ import com.cunoc.restaurant.ordering.dto.OrderItemView;
 import com.cunoc.restaurant.ordering.dto.OrderTicketView;
 import com.cunoc.restaurant.ordering.dto.TableAccountView;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
+import com.cunoc.restaurant.restaurant.RestaurantSettingService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -34,8 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -49,21 +48,15 @@ public class BillingService
     private final InvoiceSequenceRepository invoiceSequenceRepository;
     private final ServiceRatingRepository   serviceRatingRepository;
     private final InvoicePaymentRepository  invoicePaymentRepository;
-
-    @Value("${restaurant.tax.percent}")
-    private BigDecimal taxPercent;
-
-    @Value("${restaurant.tip.suggested-percent}")
-    private BigDecimal suggestedTipPercent;
+    private final RestaurantSettingService  settingService;
 
     @Transactional(readOnly = true)
     public BillPreviewView billPreview(Long accountId)
     {
         var account = tableAccountService.findById(accountId);
+        var setting = settingService.get();
 
         var subtotal = BigDecimal.ZERO;
-        Map<Long, BigDecimal> subtotalBySplit = new HashMap<>();
-        Map<Long, String> splitLabels = new HashMap<>();
 
         for (OrderTicketView ticket : account.tickets())
         {
@@ -77,22 +70,23 @@ public class BillingService
             }
         }
 
-        var taxAmount = subtotal.multiply(taxPercent).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
-        var tipAmount = subtotal.multiply(suggestedTipPercent).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+        var taxAmount = percentOf(subtotal, setting.taxPercent());
+        var tipAmount = percentOf(subtotal, setting.tipSuggestedPercent());
         var total     = subtotal.add(taxAmount);
 
-        var splits = subtotalBySplit.entrySet().stream()
-                .map(e -> new SplitPreviewView(e.getKey(), splitLabels.get(e.getKey()), e.getValue()))
-                .toList();
-
-        return new BillPreviewView(accountId, subtotal, taxPercent, taxAmount,
-                suggestedTipPercent, tipAmount, total, splits);
+        // ponytail: el desglose por sub-cuenta va vacio. Cobrar por sub-cuenta exige que
+        // validateNotAlreadyInvoiced deje de mirar la cuenta entera; queda como pendiente.
+        return new BillPreviewView(accountId, subtotal, setting.taxPercent(), taxAmount,
+                setting.tipSuggestedPercent(), tipAmount, total, List.of());
     }
 
     /**
      * Factura una cuenta completa. Requiere caja abierta (regla central del proyecto),
      * que la cuenta no tenga items sin entregar, que no este ya facturada, y que la suma
      * de payments[] cuadre exacto con el total (pagos combinados o divididos por sub-cuenta).
+     *
+     * El total es subtotal + impuesto + propina - descuento por puntos redimidos. El
+     * descuento se topa al bruto para que una redencion grande no deje un total negativo.
      */
     public InvoiceView issueInvoice(Long accountId, IssueInvoiceDTO request)
     {
@@ -106,14 +100,26 @@ public class BillingService
 
         var preview = billPreview(accountId);
 
-        int redeemedPoints = 0;
+        var tipAmount  = request.tipAmount() != null ? request.tipAmount() : BigDecimal.ZERO;
+        var grossTotal = preview.subtotal().add(preview.taxAmount()).add(tipAmount);
+
+        int redeemedPoints  = 0;
+        var discountAmount  = BigDecimal.ZERO;
+
         if (request.customerId() != null && request.redeemPoints() != null && request.redeemPoints() > 0)
         {
-            customerService.redeem(request.customerId(), request.redeemPoints(), null);
             redeemedPoints = request.redeemPoints();
+            discountAmount = settingService.get().currencyPerPoint()
+                    .multiply(BigDecimal.valueOf(redeemedPoints))
+                    .setScale(2, RoundingMode.HALF_UP)
+                    .min(grossTotal);
+
+            customerService.redeem(request.customerId(), redeemedPoints, null);
         }
 
-        validatePaymentsMatchTotal(request, preview.total());
+        var total = grossTotal.subtract(discountAmount);
+
+        validatePaymentsMatchTotal(request, total);
 
         var invoice = new Invoice();
         invoice.setInvoiceNumber(nextInvoiceNumber());
@@ -125,9 +131,10 @@ public class BillingService
         invoice.setWaiterId(account.waiterId());
         invoice.setCustomerId(request.customerId());
         invoice.setSubtotal(preview.subtotal());
+        invoice.setDiscountAmount(discountAmount);
         invoice.setTaxAmount(preview.taxAmount());
-        invoice.setTipAmount(BigDecimal.ZERO);
-        invoice.setTotal(preview.total());
+        invoice.setTipAmount(tipAmount);
+        invoice.setTotal(total);
         invoice.setRedeemedPoints(redeemedPoints);
         invoice.setStatus(InvoiceStatus.ISSUED);
         invoice.setIssuedAt(LocalDateTime.now());
@@ -136,23 +143,16 @@ public class BillingService
 
         tableAccountService.close(accountId);
 
-        for (var paymentLine : request.payments())
-        {
-            var payment = new InvoicePayment();
-            payment.setInvoiceId(invoice.getInvoiceId());
-            payment.setMethod(paymentLine.method());
-            payment.setAmount(paymentLine.amount());
-            invoicePaymentRepository.save(payment);
+        registerPayments(request.payments(), invoice, cashierId, tipAmount, total);
 
-            var movementType = paymentLine.method() == PaymentMethod.CASH
-                    ? MovementType.CASH_SALE
-                    : MovementType.CARD_SALE;
-            cashShiftService.registerMovement(cashierId, movementType, paymentLine.amount(), invoice.getInvoiceId());
-        }
+        if (discountAmount.signum() > 0)
+            cashShiftService.registerMovement(cashierId, MovementType.LOYALTY_REDEMPTION,
+                    discountAmount, invoice.getInvoiceId());
 
         if (request.customerId() != null)
         {
-            var accruedPoints = accruePointsAndReturn(request.customerId(), preview.total(), invoice.getInvoiceId());
+            var netSale       = preview.subtotal().subtract(discountAmount).max(BigDecimal.ZERO);
+            var accruedPoints = accruePointsAndReturn(request.customerId(), netSale, invoice.getInvoiceId());
             invoice.setAccruedPoints(accruedPoints);
             invoice = invoiceRepository.save(invoice);
         }
@@ -211,6 +211,54 @@ public class BillingService
         rating.setCreatedAt(LocalDateTime.now());
 
         return ServiceRatingView.from(serviceRatingRepository.save(rating));
+    }
+
+    /**
+     * Cada pago entra al turno partido en su venta y su propina: la propina se reparte a
+     * prorrata y la ultima linea absorbe el redondeo, de modo que ventas + propinas suma
+     * exactamente lo cobrado y el cuadre no cuenta el mismo quetzal dos veces.
+     */
+    private void registerPayments(List<PaymentDTO> payments, Invoice invoice, Long cashierId,
+                                  BigDecimal tipAmount, BigDecimal total)
+    {
+        var remainingTip = tipAmount;
+
+        for (int i = 0; i < payments.size(); i++)
+        {
+            var line   = payments.get(i);
+            var isCash = line.method() == PaymentMethod.CASH;
+
+            var payment = new InvoicePayment();
+            payment.setInvoiceId(invoice.getInvoiceId());
+            payment.setMethod(line.method());
+            payment.setAmount(line.amount());
+            invoicePaymentRepository.save(payment);
+
+            var tipShare = BigDecimal.ZERO;
+            if (tipAmount.signum() > 0)
+                tipShare = i == payments.size() - 1
+                        ? remainingTip
+                        : tipAmount.multiply(line.amount()).divide(total, 2, RoundingMode.HALF_UP);
+
+            remainingTip = remainingTip.subtract(tipShare);
+
+            var saleAmount = line.amount().subtract(tipShare);
+
+            if (saleAmount.signum() > 0)
+                cashShiftService.registerMovement(cashierId,
+                        isCash ? MovementType.CASH_SALE : MovementType.CARD_SALE,
+                        saleAmount, invoice.getInvoiceId());
+
+            if (tipShare.signum() > 0)
+                cashShiftService.registerMovement(cashierId,
+                        isCash ? MovementType.CASH_TIP : MovementType.CARD_TIP,
+                        tipShare, invoice.getInvoiceId());
+        }
+    }
+
+    private static BigDecimal percentOf(BigDecimal amount, BigDecimal percent)
+    {
+        return amount.multiply(percent).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
     }
 
     private void validatePaymentsMatchTotal(IssueInvoiceDTO request, BigDecimal total)

@@ -1,5 +1,6 @@
 package com.cunoc.restaurant.ordering.dto;
 
+import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import jakarta.validation.constraints.NotNull;
 
 public record UpdateOrderItemStatusDTO(
