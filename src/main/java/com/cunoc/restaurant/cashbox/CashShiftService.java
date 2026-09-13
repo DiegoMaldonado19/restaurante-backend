@@ -44,8 +44,18 @@ public class CashShiftService
         shift.setOpeningBalance(request.openingBalance());
         shift.setStatus(CashShiftStatus.OPEN);
         shift.setOpenedAt(LocalDateTime.now());
+        shift = cashShiftRepository.save(shift);
 
-        return CashShiftView.from(cashShiftRepository.save(shift));
+        // El saldo inicial es un movimiento mas: asi aparece en el historial del turno,
+        // que el enunciado pide, y el cuadre lo suma desde la misma lista que el resto.
+        var opening = new CashMovement();
+        opening.setCashShiftId(shift.getCashShiftId());
+        opening.setMovementType(MovementType.OPENING_BALANCE);
+        opening.setAmount(request.openingBalance());
+        opening.setCreatedAt(LocalDateTime.now());
+        cashMovementRepository.save(opening);
+
+        return CashShiftView.from(shift);
     }
 
     public CashMovementView registerMovement(Long cashierId, MovementType type, BigDecimal amount, Long invoiceId)
@@ -81,10 +91,12 @@ public class CashShiftService
 
         var cashTypes = Set.of(MovementType.OPENING_BALANCE, MovementType.CASH_SALE, MovementType.CASH_TIP);
 
+        // Se parte de cero: OPENING_BALANCE ya es uno de los movimientos filtrados y
+        // sembrar el reduce con el saldo inicial lo contaria dos veces.
         var expectedCash = cashMovements.stream()
                 .filter(m -> cashTypes.contains(m.getMovementType()))
                 .map(CashMovement::getAmount)
-                .reduce(shift.getOpeningBalance(), BigDecimal::add);
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         shift.setExpectedCash(expectedCash);
         shift.setCountedCash(request.countedCash());

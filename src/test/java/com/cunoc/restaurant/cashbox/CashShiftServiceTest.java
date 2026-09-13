@@ -76,25 +76,54 @@ class CashShiftServiceTest
                 .isEqualTo(ErrorCode.CASH_SHIFT_ALREADY_OPEN);
     }
 
+    /** openShift siembra este movimiento, asi que el turno real siempre lo trae. */
+    private CashMovement apertura(BigDecimal amount)
+    {
+        var movement = new CashMovement();
+        movement.setMovementType(MovementType.OPENING_BALANCE);
+        movement.setAmount(amount);
+        return movement;
+    }
+
+    @Test
+    void abrirTurnoRegistraElSaldoInicialComoMovimiento()
+    {
+        when(cashShiftRepository.findByCashierIdAndStatus(CASHIER_ID, CashShiftStatus.OPEN))
+                .thenReturn(Optional.empty());
+
+        cashShiftService.openShift(CASHIER_ID, new OpenCashShiftDTO(BigDecimal.valueOf(500)));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(CashMovement.class);
+        org.mockito.Mockito.verify(cashMovementRepository).save(captor.capture());
+
+        assertThat(captor.getValue().getMovementType()).isEqualTo(MovementType.OPENING_BALANCE);
+        assertThat(captor.getValue().getAmount()).isEqualByComparingTo(BigDecimal.valueOf(500));
+    }
+
     // --- Cerrar turno ------------------------------------------------------
 
     @Test
     void cerrarTurnoConCuadreExactoEsValido()
     {
         when(cashShiftRepository.findById(SHIFT_ID)).thenReturn(Optional.of(shift));
-        when(cashMovementRepository.findByCashShiftId(SHIFT_ID)).thenReturn(List.of());
+        when(cashMovementRepository.findByCashShiftId(SHIFT_ID))
+                .thenReturn(List.of(apertura(BigDecimal.valueOf(500))));
 
         var result = cashShiftService.closeShift(CASHIER_ID, SHIFT_ID, new CloseCashShiftDTO(BigDecimal.valueOf(500)));
 
-       assertThat(result.status()).isEqualTo(CashShiftStatus.CLOSED.name());
+        assertThat(result.status()).isEqualTo(CashShiftStatus.CLOSED.name());
         assertThat(result.difference()).isEqualByComparingTo(BigDecimal.ZERO);
+
+        // El fondo inicial se cuenta una sola vez, no dos.
+        assertThat(result.expectedCash()).isEqualByComparingTo(BigDecimal.valueOf(500));
     }
 
     @Test
     void cerrarTurnoConFaltanteCalculaLaDiferenciaNegativa()
     {
         when(cashShiftRepository.findById(SHIFT_ID)).thenReturn(Optional.of(shift));
-        when(cashMovementRepository.findByCashShiftId(SHIFT_ID)).thenReturn(List.of());
+        when(cashMovementRepository.findByCashShiftId(SHIFT_ID))
+                .thenReturn(List.of(apertura(BigDecimal.valueOf(500))));
 
         // Se esperaban 500 (solo el fondo inicial), pero se contaron 480: faltan 20.
         var result = cashShiftService.closeShift(CASHIER_ID, SHIFT_ID, new CloseCashShiftDTO(BigDecimal.valueOf(480)));
@@ -111,7 +140,8 @@ class CashShiftServiceTest
         venta.setAmount(BigDecimal.valueOf(100));
 
         when(cashShiftRepository.findById(SHIFT_ID)).thenReturn(Optional.of(shift));
-        when(cashMovementRepository.findByCashShiftId(SHIFT_ID)).thenReturn(List.of(venta));
+        when(cashMovementRepository.findByCashShiftId(SHIFT_ID))
+                .thenReturn(List.of(apertura(BigDecimal.valueOf(500)), venta));
 
         // Esperado: 500 (fondo) + 100 (venta) = 600. Se contaron 610: sobran 10.
         var result = cashShiftService.closeShift(CASHIER_ID, SHIFT_ID, new CloseCashShiftDTO(BigDecimal.valueOf(610)));

@@ -20,6 +20,9 @@ import com.cunoc.restaurant.ordering.dto.OrderItemView;
 import com.cunoc.restaurant.ordering.dto.OrderTicketView;
 import com.cunoc.restaurant.ordering.dto.TableAccountView;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
+import com.cunoc.restaurant.restaurant.RestaurantSettingService;
+import com.cunoc.restaurant.restaurant.dto.RestaurantSettingView;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -55,10 +58,12 @@ class BillingServiceTest
     private final InvoiceSequenceRepository invoiceSequenceRepository = mock(InvoiceSequenceRepository.class);
     private final ServiceRatingRepository   serviceRatingRepository   = mock(ServiceRatingRepository.class);
     private final InvoicePaymentRepository  invoicePaymentRepository  = mock(InvoicePaymentRepository.class);
+    private final RestaurantSettingService  settingService            = mock(RestaurantSettingService.class);
 
     private final BillingService billingService = new BillingService(
             tableAccountService, cashShiftService, customerService,
-            invoiceRepository, invoiceSequenceRepository, serviceRatingRepository, invoicePaymentRepository);
+            invoiceRepository, invoiceSequenceRepository, serviceRatingRepository,
+            invoicePaymentRepository, settingService);
 
     private CashShift shift;
     private InvoiceSequence sequence;
@@ -82,10 +87,11 @@ class BillingServiceTest
         sequence.setSequenceId(1L);
         sequence.setNextNumber(1L);
 
-        // application.properties trae estos valores; los fijamos aqui via reflection
-        // porque @Value no se resuelve sin contexto de Spring en un test unitario puro.
-        setField("taxPercent", BigDecimal.valueOf(12));
-        setField("suggestedTipPercent", BigDecimal.valueOf(10));
+        // Los mismos valores que siembra V2: 12% de impuesto, 10% de propina sugerida,
+        // 1 punto por quetzal y Q0.10 por punto al redimir.
+        when(settingService.get()).thenReturn(new RestaurantSettingView(
+                1L, BigDecimal.valueOf(12), BigDecimal.valueOf(10),
+                BigDecimal.ONE, BigDecimal.valueOf(0.10)));
 
         when(invoiceSequenceRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sequence));
         when(invoiceRepository.save(any(Invoice.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -93,20 +99,15 @@ class BillingServiceTest
         when(cashShiftService.registerMovement(any(), any(), any(), any()))
                 .thenReturn(mock(CashMovementView.class));
     }
-
-    private void setField(String name, Object value)
+    @AfterEach
+    void limpiarContextoDeSeguridad()
     {
-        try
-        {
-            var field = BillingService.class.getDeclaredField(name);
-            field.setAccessible(true);
-            field.set(billingService, value);
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
+        // El SecurityContextHolder es estatico y surefire reutiliza la JVM: sin esto la
+        // autenticacion se filtra a la siguiente clase y UserControllerSecurityTest ve un
+        // token donde esperaba una peticion anonima.
+        SecurityContextHolder.clearContext();
     }
+
 
     private OrderItemView deliveredItem(BigDecimal unitPrice, int quantity)
     {
@@ -140,7 +141,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID))
                 .thenThrow(new BusinessException(ErrorCode.CASH_SHIFT_NOT_OPEN));
 
-        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -156,7 +157,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(pendingItem()));
 
-        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.TEN)), null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.TEN)), null, null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -176,7 +177,7 @@ class BillingServiceTest
         facturaExistente.setInvoiceNumber(99L);
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.of(facturaExistente));
 
-        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(61.60))), null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(61.60))), null, null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -194,7 +195,7 @@ class BillingServiceTest
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
-        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -212,7 +213,7 @@ class BillingServiceTest
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
-        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(123.20))), null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(123.20))), null, null, null);
 
         var result = billingService.issueInvoice(ACCOUNT_ID, request);
 
@@ -242,7 +243,7 @@ class BillingServiceTest
         var request = new IssueInvoiceDTO(null, List.of(
                 new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(73.20)),
                 new PaymentDTO(PaymentMethod.CARD, BigDecimal.valueOf(50.00))
-        ), null, null);
+        ), null, null, null);
 
         billingService.issueInvoice(ACCOUNT_ID, request);
 
@@ -267,8 +268,8 @@ class BillingServiceTest
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
         when(customerService.availablePoints(7L)).thenReturn(50, 60); // antes de acreditar, despues de acreditar
 
-        // Subtotal 100 + 12% = 112.00
-        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CARD, BigDecimal.valueOf(112.00))), 7L, 20);
+        // Subtotal 100 + 12% = 112.00, menos 20 puntos x Q0.10 = Q2.00 de descuento.
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CARD, BigDecimal.valueOf(110.00))), 7L, 20, null);
 
         var result = billingService.issueInvoice(ACCOUNT_ID, request);
 
@@ -277,5 +278,110 @@ class BillingServiceTest
                 org.mockito.ArgumentMatchers.eq(7L), any(), any());
         assertThat(result.redeemedPoints()).isEqualTo(20);
         assertThat(result.accruedPoints()).isEqualTo(10);
+    }
+
+    // --- Redencion de puntos: el descuento tiene que bajar el total ---------
+
+    /**
+     * El bug que esta prueba fija: se redimian los puntos, se descontaban del saldo del
+     * cliente y el total seguia igual. El cliente perdia los puntos y pagaba lo mismo.
+     */
+    @Test
+    void redimirPuntosBajaElTotalYQuedaEnLaFactura()
+    {
+        when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(customerService.availablePoints(7L)).thenReturn(0, 0);
+
+        // 100 + 12% = 112.00; 50 puntos x Q0.10 = Q5.00 => se pagan Q107.00
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(107.00))), 7L, 50, null);
+
+        var result = billingService.issueInvoice(ACCOUNT_ID, request);
+
+        assertThat(result.discountAmount()).isEqualByComparingTo(BigDecimal.valueOf(5.00));
+        assertThat(result.total()).isEqualByComparingTo(BigDecimal.valueOf(107.00));
+
+        org.mockito.Mockito.verify(cashShiftService).registerMovement(
+                org.mockito.ArgumentMatchers.eq(CASHIER_ID),
+                org.mockito.ArgumentMatchers.eq(com.cunoc.restaurant.cashbox.model.MovementType.LOYALTY_REDEMPTION),
+                org.mockito.ArgumentMatchers.argThat(amount -> amount.compareTo(BigDecimal.valueOf(5.00)) == 0),
+                any());
+    }
+
+    @Test
+    void elDescuentoNuncaDejaElTotalNegativo()
+    {
+        when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.TEN, 1)));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(customerService.availablePoints(7L)).thenReturn(0, 0);
+
+        // 10 + 12% = 11.20, pero se redimen 5000 puntos = Q500: el descuento se topa al bruto.
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.ZERO)), 7L, 5000, null);
+
+        var result = billingService.issueInvoice(ACCOUNT_ID, request);
+
+        assertThat(result.discountAmount()).isEqualByComparingTo(BigDecimal.valueOf(11.20));
+        assertThat(result.total()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    // --- Propina -------------------------------------------------------------
+
+    /**
+     * El otro bug: la propina se calculaba para la precuenta y se guardaba en cero, asi
+     * que nunca entraba al total ni generaba CASH_TIP, que es lo que el cuadre suma.
+     */
+    @Test
+    void laPropinaEntraEnElTotalYSeRegistraComoMovimientoAparte()
+    {
+        when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+
+        // 100 + 12% = 112.00 + Q15 de propina = Q127.00
+        var request = new IssueInvoiceDTO(null,
+                List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(127.00))),
+                null, null, BigDecimal.valueOf(15.00));
+
+        var result = billingService.issueInvoice(ACCOUNT_ID, request);
+
+        assertThat(result.tipAmount()).isEqualByComparingTo(BigDecimal.valueOf(15.00));
+        assertThat(result.total()).isEqualByComparingTo(BigDecimal.valueOf(127.00));
+
+        // La venta y la propina van separadas y suman exactamente lo cobrado.
+        org.mockito.Mockito.verify(cashShiftService).registerMovement(
+                org.mockito.ArgumentMatchers.eq(CASHIER_ID),
+                org.mockito.ArgumentMatchers.eq(com.cunoc.restaurant.cashbox.model.MovementType.CASH_SALE),
+                org.mockito.ArgumentMatchers.argThat(amount -> amount.compareTo(BigDecimal.valueOf(112.00)) == 0),
+                any());
+        org.mockito.Mockito.verify(cashShiftService).registerMovement(
+                org.mockito.ArgumentMatchers.eq(CASHIER_ID),
+                org.mockito.ArgumentMatchers.eq(com.cunoc.restaurant.cashbox.model.MovementType.CASH_TIP),
+                org.mockito.ArgumentMatchers.argThat(amount -> amount.compareTo(BigDecimal.valueOf(15.00)) == 0),
+                any());
+    }
+
+    @Test
+    void conPagoCombinadoLaPropinaSeRepartePeroSumaExacto()
+    {
+        when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+
+        // Total 122.00 (100 + 12 de impuesto + 10 de propina) en dos pagos de 61.00
+        var request = new IssueInvoiceDTO(null, List.of(
+                new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(61.00)),
+                new PaymentDTO(PaymentMethod.CARD, BigDecimal.valueOf(61.00))
+        ), null, null, BigDecimal.valueOf(10.00));
+
+        billingService.issueInvoice(ACCOUNT_ID, request);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(BigDecimal.class);
+        org.mockito.Mockito.verify(cashShiftService, org.mockito.Mockito.times(4))
+                .registerMovement(any(), any(), captor.capture(), any());
+
+        var suma = captor.getAllValues().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertThat(suma).isEqualByComparingTo(BigDecimal.valueOf(122.00));
     }
 }

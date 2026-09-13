@@ -12,6 +12,7 @@ import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import com.cunoc.restaurant.ordering.model.TableAccount;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -104,6 +105,15 @@ class TableAccountServiceTest
         when(tableService.findById(TABLE_ID)).thenReturn(
                 new RestaurantTableView(TABLE_ID, 1, 4, TableZone.SALON, TableStatus.FREE));
     }
+    @AfterEach
+    void limpiarContextoDeSeguridad()
+    {
+        // El SecurityContextHolder es estatico y surefire reutiliza la JVM: sin esto la
+        // autenticacion se filtra a la siguiente clase y UserControllerSecurityTest ve un
+        // token donde esperaba una peticion anonima.
+        SecurityContextHolder.clearContext();
+    }
+
 
     // --- División por persona ------------------------------------------------
 

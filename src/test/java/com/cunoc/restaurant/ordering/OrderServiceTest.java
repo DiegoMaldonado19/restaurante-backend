@@ -6,6 +6,7 @@ import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.inventory.InventoryService;
 import com.cunoc.restaurant.inventory.dto.SupplyConsumption;
 import com.cunoc.restaurant.menu.MenuService;
+import com.cunoc.restaurant.menu.ModifierService;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.ordering.model.OrderItem;
@@ -16,6 +17,7 @@ import com.cunoc.restaurant.ordering.model.TableAccount;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
 import com.cunoc.restaurant.common.enums.TableZone;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -55,12 +57,13 @@ class OrderServiceTest
     private final OrderItemRepository itemRepository = mock(OrderItemRepository.class);
     private final OrderItemModifierRepository modifierRepository = mock(OrderItemModifierRepository.class);
     private final MenuService menuService = mock(MenuService.class);
+    private final ModifierService modifierService = mock(ModifierService.class);
     private final InventoryService inventoryService = mock(InventoryService.class);
     private final RestaurantTableService tableService = mock(RestaurantTableService.class);
 
     private final OrderService orderService =
             new OrderService(accountRepository, ticketRepository, itemRepository, modifierRepository,
-                            menuService, inventoryService, tableService);
+                            menuService, modifierService, inventoryService, tableService);
 
     private TableAccount account;
     private OrderItem item;
@@ -94,7 +97,15 @@ class OrderServiceTest
         when(accountRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(Optional.of(account));
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
         when(itemRepository.findById(ITEM_ID)).thenReturn(Optional.of(item));
-        when(itemRepository.save(any(OrderItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        // IDENTITY asigna el id en el save, y el descuento de stock depende de el para
+        // referenciar el order_item. Sin simularlo, el mock no modela lo que pasa de verdad.
+        when(itemRepository.save(any(OrderItem.class))).thenAnswer(inv ->
+        {
+            OrderItem saved = inv.getArgument(0);
+            if (saved.getOrderItemId() == null) saved.setOrderItemId(ITEM_ID);
+
+            return saved;
+        });
         when(ticketRepository.save(any(OrderTicket.class))).thenAnswer(inv -> inv.getArgument(0));
         when(modifierRepository.save(any(OrderItemModifier.class))).thenAnswer(inv -> inv.getArgument(0));
         when(modifierRepository.findByOrderItemOrderItemId(anyLong())).thenReturn(List.of());
@@ -102,7 +113,20 @@ class OrderServiceTest
         // Mock de explodeRecipe y registerSaleConsumption
         when(menuService.explodeRecipe(any())).thenReturn(List.of(new SupplyConsumption(1L, BigDecimal.TEN)));
         when(menuService.productionCost(DISH_ID)).thenReturn(new BigDecimal("10.00"));
+        when(menuService.dishDetail(DISH_ID)).thenReturn(new com.cunoc.restaurant.menu.dto.DishDetailView(
+                DISH_ID, 1L, "Fuertes", "Hamburguesa", null, new BigDecimal("50.00"), null, 10,
+                true, true, new BigDecimal("12.00"), new BigDecimal("76.00"), true, null));
     }
+
+    @AfterEach
+    void limpiarContextoDeSeguridad()
+    {
+        // El SecurityContextHolder es estatico y surefire reutiliza la JVM: sin esto la
+        // autenticacion se filtra a la siguiente clase y UserControllerSecurityTest ve un
+        // token donde esperaba una peticion anonima.
+        SecurityContextHolder.clearContext();
+    }
+
 
     // --- Enviar comanda ------------------------------------------------------
 
@@ -117,6 +141,12 @@ class OrderServiceTest
         assertThat(result).isNotNull();
         assertThat(result.accountId()).isEqualTo(ACCOUNT_ID);
         verify(inventoryService).registerSaleConsumption(any(), anyLong(), anyLong());
+
+        // El precio de venta se congela en el item. Antes quedaba en cero y toda
+        // factura totalizaba Q0.
+        var guardado = org.mockito.ArgumentCaptor.forClass(OrderItem.class);
+        verify(itemRepository).save(guardado.capture());
+        assertThat(guardado.getValue().getUnitPrice()).isEqualByComparingTo("50.00");
     }
 
     @Test
@@ -152,7 +182,7 @@ class OrderServiceTest
     @Test
     void itemRecibidoPuedeIrAPreparacion()
     {
-        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.IN_PREPARATION);
+        var request = new UpdateOrderItemStatusDTO(OrderItemStatus.IN_PREPARATION);
 
         var result = orderService.updateStatus(ITEM_ID, request);
 
@@ -164,7 +194,7 @@ class OrderServiceTest
     {
         item.setStatus(OrderItemStatus.IN_PREPARATION);
 
-        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.READY);
+        var request = new UpdateOrderItemStatusDTO(OrderItemStatus.READY);
 
         var result = orderService.updateStatus(ITEM_ID, request);
 
@@ -176,7 +206,7 @@ class OrderServiceTest
     {
         item.setStatus(OrderItemStatus.READY);
 
-        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.DELIVERED);
+        var request = new UpdateOrderItemStatusDTO(OrderItemStatus.DELIVERED);
 
         var result = orderService.updateStatus(ITEM_ID, request);
 
@@ -187,7 +217,7 @@ class OrderServiceTest
     @Test
     void itemRecibidoNoPuedeIrADirectamente()
     {
-        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.DELIVERED);
+        var request = new UpdateOrderItemStatusDTO(OrderItemStatus.DELIVERED);
 
         assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -200,7 +230,7 @@ class OrderServiceTest
     {
         item.setStatus(OrderItemStatus.DELIVERED);
 
-        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.IN_PREPARATION);
+        var request = new UpdateOrderItemStatusDTO(OrderItemStatus.IN_PREPARATION);
 
         assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -213,7 +243,7 @@ class OrderServiceTest
     {
         item.setStatus(OrderItemStatus.CANCELLED);
 
-        var request = new UpdateOrderItemStatusDTO(com.cunoc.restaurant.ordering.dto.OrderItemStatus.READY);
+        var request = new UpdateOrderItemStatusDTO(OrderItemStatus.READY);
 
         assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID, request))
                 .isInstanceOf(BusinessException.class)
