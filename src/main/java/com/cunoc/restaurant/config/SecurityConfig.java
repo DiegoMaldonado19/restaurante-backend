@@ -167,6 +167,9 @@ public class SecurityConfig
                         // administrador "sin estar fisicamente en el salon", y para el mesero.
                         .requestMatchers(HttpMethod.GET, "/api/v1/floor-plan")
                             .hasAnyRole("ADMIN", "WAITER")
+                        // Reportes: solo el administrador. Son de lectura y cruzan datos de
+                        // todos los modulos, asi que no hay rol de operacion que los necesite.
+                        .requestMatchers("/api/v1/reports/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))

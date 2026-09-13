@@ -6,7 +6,6 @@ import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
 import com.cunoc.restaurant.common.security.CurrentUser;
 import com.cunoc.restaurant.inventory.InventoryService;
-import com.cunoc.restaurant.inventory.dto.SupplyConsumption;
 import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.menu.ModifierService;
 import com.cunoc.restaurant.menu.dto.ModifierView;

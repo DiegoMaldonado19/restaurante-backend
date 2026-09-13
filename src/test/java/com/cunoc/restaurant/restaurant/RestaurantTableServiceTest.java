@@ -4,7 +4,6 @@ import com.cunoc.restaurant.common.enums.TableStatus;
 import com.cunoc.restaurant.common.enums.TableZone;
 import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
-import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
 import com.cunoc.restaurant.restaurant.dto.UpdateTableStatusDTO;
 import com.cunoc.restaurant.restaurant.model.RestaurantTable;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,7 +14,6 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 

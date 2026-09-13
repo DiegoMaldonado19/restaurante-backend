@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -40,10 +41,16 @@ public class GlobalExceptionHandler
     {
         var fields = ex.getParameterValidationResults().stream()
                 .flatMap(result -> result.getResolvableErrors().stream()
-                        .map(error -> new FieldErrorDTO(
-                                toSnakeCase(result.getMethodParameter().getParameterName()),
-                                String.valueOf(result.getArgument()),
-                                error.getDefaultMessage())))
+                        .map(error -> error instanceof FieldError fieldError
+                                // El parametro es un objeto de filtros y la violacion senala
+                                // uno de sus campos: vale mas "to" que el nombre del objeto.
+                                ? new FieldErrorDTO(toSnakeCase(fieldError.getField()),
+                                                    String.valueOf(fieldError.getRejectedValue()),
+                                                    fieldError.getDefaultMessage())
+                                : new FieldErrorDTO(
+                                        toSnakeCase(result.getMethodParameter().getParameterName()),
+                                        String.valueOf(result.getArgument()),
+                                        error.getDefaultMessage())))
                 .toList();
 
         return validationResponse(fields, request);

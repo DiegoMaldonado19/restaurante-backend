@@ -1,5 +1,6 @@
 package com.cunoc.restaurant.inventory.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
@@ -19,6 +20,9 @@ public record RegisterStockEntryDTO(
         @Digits(integer = 9, fraction = 3)
         BigDecimal quantity,
 
+        @Schema(description = "Costo UNITARIO de compra, no el total de la entrada. Se guarda "
+                            + "tal cual en supply.unit_cost y en el movimiento de kardex.",
+                example = "45.00")
         @NotNull(message = "El costo de compra es obligatorio")
         @PositiveOrZero(message = "El costo de compra no puede ser negativo")
         @Digits(integer = 10, fraction = 2)

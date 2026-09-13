@@ -1,7 +1,5 @@
 package com.cunoc.restaurant.ordering;
 
-import com.cunoc.restaurant.common.exception.BusinessException;
-import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import io.swagger.v3.oas.annotations.Operation;
@@ -22,7 +20,6 @@ import org.springframework.web.bind.annotation.*;
 public class OrderController
 {
     private final OrderService orderService;
-    private final TableAccountService accountService;
 
     @GetMapping("/api/v1/orders")
     @Operation(summary = "Cola de comandas", description = "Lista ítems de comanda con filtros de estado, mesa y mesero.")
