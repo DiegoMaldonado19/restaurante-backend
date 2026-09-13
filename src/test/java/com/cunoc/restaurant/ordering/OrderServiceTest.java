@@ -15,8 +15,6 @@ import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import com.cunoc.restaurant.ordering.model.OrderTicket;
 import com.cunoc.restaurant.ordering.model.TableAccount;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
-import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
-import com.cunoc.restaurant.common.enums.TableZone;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,7 +25,6 @@ import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 

@@ -227,12 +227,16 @@ public class InventoryService
 
     public StockMovementView registerWaste(RegisterStockWasteDTO request, Long userId)
     {
-        var movement = newMovement(findForUpdate(request.supplyId()),
+        var supply   = findForUpdate(request.supplyId());
+        var movement = newMovement(supply,
                                    MovementType.WASTE,
                                    request.quantity().negate(),
                                    userId);
         movement.setWasteReason(request.wasteReason());
         movement.setReason(request.reason());
+        // La merma se valora al costo del momento, igual que la entrada congela el suyo:
+        // sin esto el reporte de mermas no tiene con que calcular el costo perdido.
+        movement.setUnitCost(supply.getUnitCost());
 
         applyMovement(movement, ErrorCode.WASTE_EXCEEDS_STOCK);
 
