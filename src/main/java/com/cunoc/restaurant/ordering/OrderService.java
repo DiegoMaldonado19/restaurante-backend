@@ -8,6 +8,8 @@ import com.cunoc.restaurant.common.security.CurrentUser;
 import com.cunoc.restaurant.inventory.InventoryService;
 import com.cunoc.restaurant.inventory.dto.SupplyConsumption;
 import com.cunoc.restaurant.menu.MenuService;
+import com.cunoc.restaurant.menu.ModifierService;
+import com.cunoc.restaurant.menu.dto.ModifierView;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.ordering.model.OrderItem;
@@ -28,7 +30,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Servicio de comandas: enviar rondas, ciclo de vida de ítems, cola de cocina.
@@ -45,6 +46,7 @@ public class OrderService
     private final OrderItemRepository itemRepository;
     private final OrderItemModifierRepository modifierRepository;
     private final MenuService menuService;
+    private final ModifierService modifierService;
     private final InventoryService inventoryService;
     private final RestaurantTableService tableService;
 
@@ -81,18 +83,18 @@ public class OrderService
         ticket.setAccount(account);
         ticket.setWaiterId(account.getWaiterId());
         ticket.setSubmittedAt(LocalDateTime.now());
+        ticketRepository.save(ticket);
 
-        // Convertir OrderLineDTO de ordering a OrderLineDTO de menu para explodeRecipe
-        var menuLines = request.items().stream()
-                .map(line -> new com.cunoc.restaurant.menu.dto.OrderLineDTO(
-                        line.dishId(), line.quantity(), line.modifierIds()))
-                .collect(Collectors.toList());
+        var userId = CurrentUser.id();
 
-        // Descontar stock de todos los ítems primero (si falla, nada se inserta)
-        var consumption = menuService.explodeRecipe(menuLines);
-        inventoryService.registerSaleConsumption(consumption, 0L, CurrentUser.id());
-
-        // Crear los ítems de la comanda
+        // El movimiento de stock referencia el order_item que lo causo: es por ahi por
+        // donde reverseSaleConsumption() lo encuentra al cancelar o marcar no disponible.
+        // Por eso el item se guarda antes de descontar, y el descuento va por item y no
+        // agregado. Todo en la misma transaccion: si a una linea no le alcanza el stock,
+        // no queda nada insertado.
+        // ponytail: al descontar por item, el orden de bloqueo de insumos solo queda
+        // garantizado dentro de cada linea. Si aparecen interbloqueos en hora pico, hay
+        // que ordenar las lineas por su insumo menor antes de recorrerlas.
         for (var line : request.items())
         {
             var item = new OrderItem();
@@ -115,16 +117,20 @@ public class OrderService
                     var modifier = new OrderItemModifier();
                     modifier.setOrderItem(item);
                     modifier.setDishModifierId(modifierId);
-                    modifier.setExtraPrice(modifierExtraPrice(modifierId));
+                    modifier.setExtraPrice(modifierExtraPrice(line.dishId(), modifierId));
                     modifierRepository.save(modifier);
                 }
             }
+
+            var consumption = menuService.explodeRecipe(List.of(
+                    new com.cunoc.restaurant.menu.dto.OrderLineDTO(
+                            line.dishId(), line.quantity(), line.modifierIds())));
+            inventoryService.registerSaleConsumption(consumption, item.getOrderItemId(), userId);
 
             log.info("Ítem {} agregado a comanda {}. Platillo: {}, cantidad: {}",
                     item.getOrderItemId(), ticket.getOrderTicketId(), line.dishId(), line.quantity());
         }
 
-        ticketRepository.save(ticket);
         log.info("Comanda {} enviada para cuenta {}. Ronda: {}",
                 ticket.getOrderTicketId(), accountId, ticket.getSubmittedAt());
 
@@ -142,7 +148,7 @@ public class OrderService
     {
         var item = itemForUpdate(orderItemId);
         var currentStatus = item.getStatus();
-        var targetStatus = com.cunoc.restaurant.ordering.model.OrderItemStatus.valueOf(request.status().name());
+        var targetStatus = request.status();
 
         // Validar que el ítem no esté en estado final
         if (currentStatus == OrderItemStatus.DELIVERED)
@@ -309,18 +315,20 @@ public class OrderService
         return false;
     }
 
+    /** El precio se congela en la comanda: cambiarlo en el menu no altera ventas pasadas. */
     private BigDecimal dishSalePrice(Long dishId)
     {
-        // Por ahora retorna BigDecimal.ZERO; se implementará cuando B2 esté disponible
-        // con MenuService.dishBrief()
-        return BigDecimal.ZERO;
+        return menuService.dishDetail(dishId).salePrice();
     }
 
-    private BigDecimal modifierExtraPrice(Long modifierId)
+    private BigDecimal modifierExtraPrice(Long dishId, Long modifierId)
     {
-        // Por ahora retorna BigDecimal.ZERO; se implementará cuando B2 esté disponible
-        // con MenuService.modifierBrief()
-        return BigDecimal.ZERO;
+        return modifierService.findByDish(dishId).stream()
+                .filter(modifier -> modifier.dishModifierId().equals(modifierId))
+                .findFirst()
+                .map(ModifierView::extraPrice)
+                .orElseThrow(() -> new NotFoundException(ErrorCode.MODIFIER_NOT_FOUND,
+                        "El modificador " + modifierId + " no pertenece al platillo " + dishId + "."));
     }
     @Transactional()
     private TableAccount accountForUpdate(Long accountId)

@@ -2,7 +2,9 @@ package com.cunoc.restaurant.billing.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.PositiveOrZero;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -10,11 +12,14 @@ import java.util.List;
  * customerId y redeemPoints son opcionales: sin cliente no hay fidelizacion en esta venta.
  * payments es una lista para soportar pagos combinados (efectivo + tarjeta) o, si se
  * factura por sub-cuenta, la division entre varias personas.
+ * tipAmount es la propina realmente cobrada; nula equivale a cero. La sugerida viaja
+ * en la precuenta, pero quien decide es el cliente en el mostrador.
  */
 public record IssueInvoiceDTO(
     Long accountSplitId,
     @NotEmpty @Valid List<PaymentDTO> payments,
     Long customerId,
-    Integer redeemPoints
+    Integer redeemPoints,
+    @PositiveOrZero BigDecimal tipAmount
 )
 {}

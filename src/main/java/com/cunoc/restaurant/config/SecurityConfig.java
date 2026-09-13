@@ -132,6 +132,41 @@ public class SecurityConfig
                             .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/api/v1/order-items/*").hasRole("WAITER")
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/order-items/*").hasRole("WAITER")
+                        // Precuenta y facturacion. Van aparte de las reglas de /accounts
+                        // porque "/api/v1/accounts/*" solo cubre un segmento y no alcanza
+                        // al anidado: sin estas dos lineas la emision caia en authenticated().
+                        .requestMatchers(HttpMethod.GET, "/api/v1/accounts/*/bill-preview")
+                            .hasAnyRole("WAITER", "CASHIER")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/accounts/*/invoices")
+                            .hasRole("CASHIER")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/invoices", "/api/v1/invoices/*")
+                            .hasAnyRole("ADMIN", "WAITER", "CASHIER")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/invoices/*/service-ratings")
+                            .hasRole("CASHIER")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/invoices/*/voids").hasRole("ADMIN")
+                        // Caja: el turno lo abre y lo cuadra el cajero; el administrador
+                        // solo lo consulta, que es lo que necesita el reporte de cuadres.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/cash-shifts",
+                                                         "/api/v1/cash-shifts/*",
+                                                         "/api/v1/cash-shifts/*/movements")
+                            .hasAnyRole("ADMIN", "CASHIER")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/cash-shifts",
+                                                         "/api/v1/cash-shifts/*/closings")
+                            .hasRole("CASHIER")
+                        // Reservas y cola: el administrador gestiona desde la app admin;
+                        // sentar al cliente es del mesero, que es quien esta en el salon.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/reservations/*/seatings",
+                                                         "/api/v1/waitlist-entries",
+                                                         "/api/v1/waitlist-entries/*/seatings")
+                            .hasRole("WAITER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/waitlist-entries/*")
+                            .hasRole("WAITER")
+                        .requestMatchers("/api/v1/reservations/**", "/api/v1/waitlist-entries/**")
+                            .hasAnyRole("ADMIN", "WAITER")
+                        // Panel de ocupacion en tiempo real: el enunciado lo pide para el
+                        // administrador "sin estar fisicamente en el salon", y para el mesero.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/floor-plan")
+                            .hasAnyRole("ADMIN", "WAITER")
                         .anyRequest().authenticated())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
