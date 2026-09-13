@@ -1,7 +1,9 @@
 package com.cunoc.restaurant.billing;
 
 import com.cunoc.restaurant.billing.dto.IssueInvoiceDTO;
+import com.cunoc.restaurant.billing.dto.PaymentDTO;
 import com.cunoc.restaurant.billing.model.Invoice;
+import com.cunoc.restaurant.billing.model.InvoicePayment;
 import com.cunoc.restaurant.billing.model.InvoiceSequence;
 import com.cunoc.restaurant.billing.model.InvoiceStatus;
 import com.cunoc.restaurant.billing.model.PaymentMethod;
@@ -38,7 +40,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Pruebas de BillingService.issueInvoice(): caja abierta, items pendientes,
- * cuenta ya facturada, y el flujo exitoso completo.
+ * cuenta ya facturada, descuadre de pagos, y el flujo exitoso completo.
  */
 class BillingServiceTest
 {
@@ -52,10 +54,11 @@ class BillingServiceTest
     private final InvoiceRepository         invoiceRepository         = mock(InvoiceRepository.class);
     private final InvoiceSequenceRepository invoiceSequenceRepository = mock(InvoiceSequenceRepository.class);
     private final ServiceRatingRepository   serviceRatingRepository   = mock(ServiceRatingRepository.class);
+    private final InvoicePaymentRepository  invoicePaymentRepository  = mock(InvoicePaymentRepository.class);
 
     private final BillingService billingService = new BillingService(
             tableAccountService, cashShiftService, customerService,
-            invoiceRepository, invoiceSequenceRepository, serviceRatingRepository);
+            invoiceRepository, invoiceSequenceRepository, serviceRatingRepository, invoicePaymentRepository);
 
     private CashShift shift;
     private InvoiceSequence sequence;
@@ -86,6 +89,7 @@ class BillingServiceTest
 
         when(invoiceSequenceRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sequence));
         when(invoiceRepository.save(any(Invoice.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(invoicePaymentRepository.save(any(InvoicePayment.class))).thenAnswer(inv -> inv.getArgument(0));
         when(cashShiftService.registerMovement(any(), any(), any(), any()))
                 .thenReturn(mock(CashMovementView.class));
     }
@@ -136,7 +140,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID))
                 .thenThrow(new BusinessException(ErrorCode.CASH_SHIFT_NOT_OPEN));
 
-        var request = new IssueInvoiceDTO(null, PaymentMethod.CASH, null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -152,7 +156,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(pendingItem()));
 
-        var request = new IssueInvoiceDTO(null, PaymentMethod.CASH, null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.TEN)), null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
@@ -172,12 +176,30 @@ class BillingServiceTest
         facturaExistente.setInvoiceNumber(99L);
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.of(facturaExistente));
 
-        var request = new IssueInvoiceDTO(null, PaymentMethod.CASH, null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(61.60))), null, null);
 
         assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
                 .extracting(ex -> ((BusinessException) ex).getErrorCode())
                 .isEqualTo(ErrorCode.ACCOUNT_ALREADY_INVOICED);
+    }
+
+    // --- Descuadre de pagos ------------------------------------------------------
+
+    @Test
+    void facturarConPagosQueNoCuadranConElTotalEsInvalido()
+    {
+        when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
+        // Subtotal 110 + 12% impuesto = 123.20, pero se paga solo 100.
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null);
+
+        assertThatThrownBy(() -> billingService.issueInvoice(ACCOUNT_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
     }
 
     // --- Flujo exitoso ------------------------------------------------------
@@ -186,11 +208,11 @@ class BillingServiceTest
     void facturarUnaCuentaValidaCalculaLosMontosYCierraLaCuenta()
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
-        // Dos platillos a Q55 c/u = Q110 de subtotal
+        // Dos platillos a Q55 c/u = Q110 de subtotal, +12% impuesto = Q123.20
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
-        var request = new IssueInvoiceDTO(null, PaymentMethod.CASH, null, null);
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(123.20))), null, null);
 
         var result = billingService.issueInvoice(ACCOUNT_ID, request);
 
@@ -210,6 +232,34 @@ class BillingServiceTest
     }
 
     @Test
+    void facturarConPagoCombinadoRegistraCadaMovimientoPorSeparado()
+    {
+        when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
+        // Total 123.20: Q73.20 en efectivo + Q50.00 con tarjeta
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+
+        var request = new IssueInvoiceDTO(null, List.of(
+                new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(73.20)),
+                new PaymentDTO(PaymentMethod.CARD, BigDecimal.valueOf(50.00))
+        ), null, null);
+
+        billingService.issueInvoice(ACCOUNT_ID, request);
+
+        org.mockito.Mockito.verify(cashShiftService).registerMovement(
+                org.mockito.ArgumentMatchers.eq(CASHIER_ID),
+                org.mockito.ArgumentMatchers.eq(com.cunoc.restaurant.cashbox.model.MovementType.CASH_SALE),
+                org.mockito.ArgumentMatchers.argThat(amount -> amount.compareTo(BigDecimal.valueOf(73.20)) == 0),
+                any());
+        org.mockito.Mockito.verify(cashShiftService).registerMovement(
+                org.mockito.ArgumentMatchers.eq(CASHIER_ID),
+                org.mockito.ArgumentMatchers.eq(com.cunoc.restaurant.cashbox.model.MovementType.CARD_SALE),
+                org.mockito.ArgumentMatchers.argThat(amount -> amount.compareTo(BigDecimal.valueOf(50.00)) == 0),
+                any());
+        org.mockito.Mockito.verify(invoicePaymentRepository, org.mockito.Mockito.times(2)).save(any(InvoicePayment.class));
+    }
+
+    @Test
     void facturarConClienteRedimeYAcreditaPuntos()
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
@@ -217,7 +267,8 @@ class BillingServiceTest
         when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
         when(customerService.availablePoints(7L)).thenReturn(50, 60); // antes de acreditar, despues de acreditar
 
-        var request = new IssueInvoiceDTO(null, PaymentMethod.CARD, 7L, 20);
+        // Subtotal 100 + 12% = 112.00
+        var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CARD, BigDecimal.valueOf(112.00))), 7L, 20);
 
         var result = billingService.issueInvoice(ACCOUNT_ID, request);
 

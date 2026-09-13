@@ -3,8 +3,6 @@ package com.cunoc.restaurant.billing;
 import com.cunoc.restaurant.billing.dto.BillPreviewView;
 import com.cunoc.restaurant.billing.dto.IssueInvoiceDTO;
 import com.cunoc.restaurant.billing.dto.InvoiceView;
-import com.cunoc.restaurant.billing.dto.RateServiceDTO;
-import com.cunoc.restaurant.billing.dto.ServiceRatingView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -36,16 +34,5 @@ public class BillingController
     {
         var invoice = billingService.issueInvoice(id, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(invoice);
-    }
-
-    @PostMapping("/{accountId}/invoices/{invoiceId}/ratings")
-    @Operation(summary = "Califica el servicio de una factura ya emitida (1 a 5), una sola vez por factura")
-    @ApiResponse(responseCode = "409", description = "RATING_ALREADY_SUBMITTED")
-    public ResponseEntity<ServiceRatingView> rateService(
-            @PathVariable Long accountId, @PathVariable Long invoiceId,
-            @Valid @RequestBody RateServiceDTO request)
-    {
-        var rating = billingService.rateService(invoiceId, request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(rating);
     }
 }

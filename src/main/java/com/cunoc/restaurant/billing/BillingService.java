@@ -3,9 +3,15 @@ package com.cunoc.restaurant.billing;
 import com.cunoc.restaurant.billing.dto.BillPreviewView;
 import com.cunoc.restaurant.billing.dto.IssueInvoiceDTO;
 import com.cunoc.restaurant.billing.dto.InvoiceView;
+import com.cunoc.restaurant.billing.dto.RateServiceDTO;
+import com.cunoc.restaurant.billing.dto.ServiceRatingView;
 import com.cunoc.restaurant.billing.dto.SplitPreviewView;
+import com.cunoc.restaurant.billing.dto.VoidInvoiceDTO;
 import com.cunoc.restaurant.billing.model.Invoice;
+import com.cunoc.restaurant.billing.model.InvoicePayment;
 import com.cunoc.restaurant.billing.model.InvoiceStatus;
+import com.cunoc.restaurant.billing.model.PaymentMethod;
+import com.cunoc.restaurant.billing.model.ServiceRating;
 import com.cunoc.restaurant.cashbox.CashShiftService;
 import com.cunoc.restaurant.cashbox.model.MovementType;
 import com.cunoc.restaurant.common.exception.BusinessException;
@@ -20,6 +26,8 @@ import com.cunoc.restaurant.ordering.dto.TableAccountView;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,12 +42,13 @@ import java.util.Map;
 @Transactional
 public class BillingService
 {
-    private final TableAccountService     tableAccountService;
-    private final CashShiftService        cashShiftService;
-    private final CustomerService         customerService;
-    private final InvoiceRepository       invoiceRepository;
+    private final TableAccountService       tableAccountService;
+    private final CashShiftService          cashShiftService;
+    private final CustomerService           customerService;
+    private final InvoiceRepository         invoiceRepository;
     private final InvoiceSequenceRepository invoiceSequenceRepository;
-    private final ServiceRatingRepository serviceRatingRepository;
+    private final ServiceRatingRepository   serviceRatingRepository;
+    private final InvoicePaymentRepository  invoicePaymentRepository;
 
     @Value("${restaurant.tax.percent}")
     private BigDecimal taxPercent;
@@ -82,7 +91,8 @@ public class BillingService
 
     /**
      * Factura una cuenta completa. Requiere caja abierta (regla central del proyecto),
-     * que la cuenta no tenga items sin entregar, y que no este ya facturada.
+     * que la cuenta no tenga items sin entregar, que no este ya facturada, y que la suma
+     * de payments[] cuadre exacto con el total (pagos combinados o divididos por sub-cuenta).
      */
     public InvoiceView issueInvoice(Long accountId, IssueInvoiceDTO request)
     {
@@ -103,6 +113,8 @@ public class BillingService
             redeemedPoints = request.redeemPoints();
         }
 
+        validatePaymentsMatchTotal(request, preview.total());
+
         var invoice = new Invoice();
         invoice.setInvoiceNumber(nextInvoiceNumber());
         invoice.setTableAccountId(accountId);
@@ -110,7 +122,7 @@ public class BillingService
         invoice.setRestaurantTableId(account.restaurantTableId());
         invoice.setCashShiftId(shift.getCashShiftId());
         invoice.setCashierId(cashierId);
-       invoice.setWaiterId(account.waiterId());
+        invoice.setWaiterId(account.waiterId());
         invoice.setCustomerId(request.customerId());
         invoice.setSubtotal(preview.subtotal());
         invoice.setTaxAmount(preview.taxAmount());
@@ -124,10 +136,19 @@ public class BillingService
 
         tableAccountService.close(accountId);
 
-        var movementType = request.paymentMethod() == com.cunoc.restaurant.billing.model.PaymentMethod.CASH
-                ? MovementType.CASH_SALE
-                : MovementType.CARD_SALE;
-        cashShiftService.registerMovement(cashierId, movementType, preview.total(), invoice.getInvoiceId());
+        for (var paymentLine : request.payments())
+        {
+            var payment = new InvoicePayment();
+            payment.setInvoiceId(invoice.getInvoiceId());
+            payment.setMethod(paymentLine.method());
+            payment.setAmount(paymentLine.amount());
+            invoicePaymentRepository.save(payment);
+
+            var movementType = paymentLine.method() == PaymentMethod.CASH
+                    ? MovementType.CASH_SALE
+                    : MovementType.CARD_SALE;
+            cashShiftService.registerMovement(cashierId, movementType, paymentLine.amount(), invoice.getInvoiceId());
+        }
 
         if (request.customerId() != null)
         {
@@ -137,6 +158,70 @@ public class BillingService
         }
 
         return InvoiceView.from(invoice);
+    }
+
+    @Transactional(readOnly = true)
+    public InvoiceView findInvoiceById(Long invoiceId)
+    {
+        return InvoiceView.from(invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new NotFoundException(ErrorCode.INVOICE_NOT_FOUND,
+                        "No existe la factura " + invoiceId + ".")));
+    }
+
+    public InvoiceView voidInvoice(Long invoiceId, VoidInvoiceDTO request)
+    {
+        var invoice = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new NotFoundException(ErrorCode.INVOICE_NOT_FOUND,
+                        "No existe la factura " + invoiceId + "."));
+
+        if (invoice.getStatus() == InvoiceStatus.VOIDED)
+            throw new BusinessException(ErrorCode.INVOICE_ALREADY_VOIDED,
+                    "La factura " + invoiceId + " ya fue anulada.");
+
+        invoice.setStatus(InvoiceStatus.VOIDED);
+        invoice.setVoidReason(request.reason());
+        invoice.setVoidedAt(LocalDateTime.now());
+
+        return InvoiceView.from(invoiceRepository.save(invoice));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<InvoiceView> search(Long waiterId, Long customerId, LocalDateTime from, LocalDateTime to,
+                                    Pageable pageable)
+    {
+        return invoiceRepository.search(waiterId, customerId, from, to, pageable)
+                .map(InvoiceView::from);
+    }
+
+    public ServiceRatingView rateService(Long invoiceId, RateServiceDTO request)
+    {
+        var invoice = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new NotFoundException(ErrorCode.INVOICE_NOT_FOUND,
+                        "No existe la factura " + invoiceId + "."));
+
+        if (serviceRatingRepository.existsByInvoiceId(invoiceId))
+            throw new BusinessException(ErrorCode.RATING_ALREADY_SUBMITTED,
+                    "La factura " + invoiceId + " ya tiene una calificación registrada.");
+
+        var rating = new ServiceRating();
+        rating.setInvoiceId(invoiceId);
+        rating.setWaiterId(invoice.getWaiterId());
+        rating.setScore(request.score());
+        rating.setCommentText(request.commentText());
+        rating.setCreatedAt(LocalDateTime.now());
+
+        return ServiceRatingView.from(serviceRatingRepository.save(rating));
+    }
+
+    private void validatePaymentsMatchTotal(IssueInvoiceDTO request, BigDecimal total)
+    {
+        var sum = request.payments().stream()
+                .map(p -> p.amount())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (sum.compareTo(total) != 0)
+            throw new BusinessException(ErrorCode.PAYMENT_AMOUNT_MISMATCH,
+                    "La suma de los pagos (" + sum + ") no coincide con el total de la factura (" + total + ").");
     }
 
     private int accruePointsAndReturn(Long customerId, BigDecimal netAmount, Long invoiceId)
@@ -170,35 +255,6 @@ public class BillingService
         if (hayPendientes)
             throw new BusinessException(ErrorCode.ACCOUNT_HAS_PENDING_ORDERS,
                     "La cuenta " + account.tableAccountId() + " tiene items sin entregar. Entregarlos antes de facturar.");
-    }
-
-        @Transactional(readOnly = true)
-    public org.springframework.data.domain.Page<com.cunoc.restaurant.billing.dto.InvoiceView> search(
-            Long waiterId, Long customerId, LocalDateTime from, LocalDateTime to,
-            org.springframework.data.domain.Pageable pageable)
-    {
-        return invoiceRepository.search(waiterId, customerId, from, to, pageable)
-                .map(com.cunoc.restaurant.billing.dto.InvoiceView::from);
-    }
-
-       public com.cunoc.restaurant.billing.dto.ServiceRatingView rateService(Long invoiceId, com.cunoc.restaurant.billing.dto.RateServiceDTO request)
-    {
-        var invoice = invoiceRepository.findById(invoiceId)
-                .orElseThrow(() -> new NotFoundException(ErrorCode.INVOICE_NOT_FOUND,
-                        "No existe la factura " + invoiceId + "."));
-
-        if (serviceRatingRepository.existsByInvoiceId(invoiceId))
-            throw new BusinessException(ErrorCode.RATING_ALREADY_SUBMITTED,
-                    "La factura " + invoiceId + " ya tiene una calificación registrada.");
-
-        var rating = new com.cunoc.restaurant.billing.model.ServiceRating();
-        rating.setInvoiceId(invoiceId);
-        rating.setWaiterId(invoice.getWaiterId());
-        rating.setScore(request.score());
-        rating.setCommentText(request.commentText());
-        rating.setCreatedAt(LocalDateTime.now());
-
-        return com.cunoc.restaurant.billing.dto.ServiceRatingView.from(serviceRatingRepository.save(rating));
     }
 
     private void validateNotAlreadyInvoiced(Long accountId)
