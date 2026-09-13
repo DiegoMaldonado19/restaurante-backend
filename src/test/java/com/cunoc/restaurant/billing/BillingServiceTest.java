@@ -14,6 +14,8 @@ import com.cunoc.restaurant.cashbox.model.CashShiftStatus;
 import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.customer.CustomerService;
+import com.cunoc.restaurant.menu.MenuService;
+import com.cunoc.restaurant.menu.dto.DishDetailView;
 import com.cunoc.restaurant.ordering.TableAccountService;
 import com.cunoc.restaurant.ordering.dto.DishModifierView;
 import com.cunoc.restaurant.ordering.dto.OrderItemView;
@@ -21,7 +23,11 @@ import com.cunoc.restaurant.ordering.dto.OrderTicketView;
 import com.cunoc.restaurant.ordering.dto.TableAccountView;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import com.cunoc.restaurant.restaurant.RestaurantSettingService;
+import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import com.cunoc.restaurant.restaurant.dto.RestaurantSettingView;
+import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
+import com.cunoc.restaurant.common.enums.TableStatus;
+import com.cunoc.restaurant.common.enums.TableZone;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,8 +48,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Pruebas de BillingService.issueInvoice(): caja abierta, items pendientes,
- * cuenta ya facturada, descuadre de pagos, y el flujo exitoso completo.
+ * Pruebas de BillingService: issueInvoice() —caja abierta, items pendientes, cuenta ya
+ * facturada, descuadre de pagos y el flujo exitoso completo— y findInvoiceById(), que es
+ * el comprobante imprimible con su detalle de platillos.
  */
 class BillingServiceTest
 {
@@ -59,11 +66,13 @@ class BillingServiceTest
     private final ServiceRatingRepository   serviceRatingRepository   = mock(ServiceRatingRepository.class);
     private final InvoicePaymentRepository  invoicePaymentRepository  = mock(InvoicePaymentRepository.class);
     private final RestaurantSettingService  settingService            = mock(RestaurantSettingService.class);
+    private final MenuService               menuService               = mock(MenuService.class);
+    private final RestaurantTableService    tableService              = mock(RestaurantTableService.class);
 
     private final BillingService billingService = new BillingService(
             tableAccountService, cashShiftService, customerService,
             invoiceRepository, invoiceSequenceRepository, serviceRatingRepository,
-            invoicePaymentRepository, settingService);
+            invoicePaymentRepository, settingService, menuService, tableService);
 
     private CashShift shift;
     private InvoiceSequence sequence;
@@ -383,5 +392,117 @@ class BillingServiceTest
 
         var suma = captor.getAllValues().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
         assertThat(suma).isEqualByComparingTo(BigDecimal.valueOf(122.00));
+    }
+
+    // --- Comprobante imprimible ------------------------------------------------
+
+    /** El detalle que la vista de impresion necesita: un renglon por platillo servido. */
+    @Test
+    void elComprobanteTraeElDetalleDePlatillosConSuNombre()
+    {
+        var invoice = invoiceFor(BigDecimal.valueOf(110));
+        when(invoiceRepository.findById(77L)).thenReturn(Optional.of(invoice));
+        when(tableAccountService.findById(ACCOUNT_ID))
+                .thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
+        when(menuService.dishDetail(1L)).thenReturn(dish("Pollo a la plancha"));
+        when(tableService.findById(5L)).thenReturn(table(12));
+
+        var result = billingService.findInvoiceById(77L);
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).dishName()).isEqualTo("Pollo a la plancha");
+        assertThat(result.items().get(0).quantity()).isEqualTo(2);
+        assertThat(result.items().get(0).lineTotal()).isEqualByComparingTo(BigDecimal.valueOf(110));
+        assertThat(result.restaurantTableNumber()).isEqualTo(12);
+    }
+
+    /**
+     * La razon de ser de la prueba: si el comprobante no suma lo mismo que la factura, el
+     * cliente ve un papel que no cuadra con lo que pago.
+     */
+    @Test
+    void elDetalleDelComprobanteSumaExactamenteElSubtotalDeLaFactura()
+    {
+        var invoice = invoiceFor(BigDecimal.valueOf(135));
+        when(invoiceRepository.findById(77L)).thenReturn(Optional.of(invoice));
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(
+                deliveredItem(BigDecimal.valueOf(55), 2),
+                deliveredItem(BigDecimal.valueOf(25), 1)));
+        when(menuService.dishDetail(1L)).thenReturn(dish("Pollo a la plancha"));
+        when(tableService.findById(5L)).thenReturn(table(12));
+
+        var result = billingService.findInvoiceById(77L);
+
+        var sumaDeLineas = result.items().stream()
+                .map(linea -> linea.lineTotal())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        assertThat(sumaDeLineas).isEqualByComparingTo(result.subtotal());
+    }
+
+    /** Un item cancelado no entro al subtotal, asi que tampoco puede salir impreso. */
+    @Test
+    void elComprobanteNoImprimeLosItemsCancelados()
+    {
+        var invoice = invoiceFor(BigDecimal.valueOf(55));
+        when(invoiceRepository.findById(77L)).thenReturn(Optional.of(invoice));
+        when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(
+                deliveredItem(BigDecimal.valueOf(55), 1),
+                cancelledItem()));
+        when(menuService.dishDetail(1L)).thenReturn(dish("Pollo a la plancha"));
+        when(tableService.findById(5L)).thenReturn(table(12));
+
+        var result = billingService.findInvoiceById(77L);
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).lineTotal()).isEqualByComparingTo(result.subtotal());
+    }
+
+    /** El historial es una lista: resolver el detalle de cada fila seria una lectura por fila. */
+    @Test
+    void elHistorialNoResuelveElDetalleDeCadaFactura()
+    {
+        when(invoiceRepository.search(null, null, null, null, org.springframework.data.domain.Pageable.unpaged()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(invoiceFor(BigDecimal.valueOf(55)))));
+
+        var page = billingService.search(null, null, null, null,
+                org.springframework.data.domain.Pageable.unpaged());
+
+        assertThat(page.getContent().get(0).items()).isEmpty();
+        assertThat(page.getContent().get(0).restaurantTableNumber()).isNull();
+        org.mockito.Mockito.verifyNoInteractions(menuService);
+    }
+
+    private Invoice invoiceFor(BigDecimal subtotal)
+    {
+        var invoice = new Invoice();
+        invoice.setInvoiceId(77L);
+        invoice.setInvoiceNumber(77L);
+        invoice.setTableAccountId(ACCOUNT_ID);
+        invoice.setRestaurantTableId(5L);
+        invoice.setWaiterId(3L);
+        invoice.setSubtotal(subtotal);
+        invoice.setTotal(subtotal);
+        invoice.setStatus(InvoiceStatus.ISSUED);
+        invoice.setIssuedAt(LocalDateTime.now());
+        return invoice;
+    }
+
+    private OrderItemView cancelledItem()
+    {
+        return new OrderItemView(3L, 1L, "Pollo a la plancha", List.<DishModifierView>of(), null,
+                1, BigDecimal.valueOf(55), BigDecimal.ZERO, null, OrderItemStatus.CANCELLED,
+                LocalDateTime.now(), null, null, false, null);
+    }
+
+    private DishDetailView dish(String name)
+    {
+        return new DishDetailView(1L, 1L, "Fuertes", name, null, BigDecimal.valueOf(55),
+                null, 15, true, true, BigDecimal.ZERO, BigDecimal.ZERO, true, null);
+    }
+
+    private RestaurantTableView table(int number)
+    {
+        return new RestaurantTableView(5L, number, 4, TableZone.SALON, TableStatus.FREE);
     }
 }
