@@ -3,6 +3,7 @@ package com.cunoc.restaurant.billing;
 import com.cunoc.restaurant.billing.dto.BillPreviewView;
 import com.cunoc.restaurant.billing.dto.IssueInvoiceDTO;
 import com.cunoc.restaurant.billing.dto.PaymentDTO;
+import com.cunoc.restaurant.billing.dto.InvoiceLineView;
 import com.cunoc.restaurant.billing.dto.InvoiceView;
 import com.cunoc.restaurant.billing.dto.RateServiceDTO;
 import com.cunoc.restaurant.billing.dto.ServiceRatingView;
@@ -19,12 +20,14 @@ import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
 import com.cunoc.restaurant.common.security.CurrentUser;
 import com.cunoc.restaurant.customer.CustomerService;
+import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.ordering.TableAccountService;
 import com.cunoc.restaurant.ordering.dto.OrderItemView;
 import com.cunoc.restaurant.ordering.dto.OrderTicketView;
 import com.cunoc.restaurant.ordering.dto.TableAccountView;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import com.cunoc.restaurant.restaurant.RestaurantSettingService;
+import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -34,7 +37,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -49,6 +55,8 @@ public class BillingService
     private final ServiceRatingRepository   serviceRatingRepository;
     private final InvoicePaymentRepository  invoicePaymentRepository;
     private final RestaurantSettingService  settingService;
+    private final MenuService               menuService;
+    private final RestaurantTableService    tableService;
 
     @Transactional(readOnly = true)
     public BillPreviewView billPreview(Long accountId)
@@ -160,12 +168,52 @@ public class BillingService
         return InvoiceView.from(invoice);
     }
 
+    /**
+     * El comprobante: la factura con su detalle de platillos, que es lo que la vista de
+     * impresion necesita. El historial (search) no lo trae: resolver el detalle de cada
+     * fila de una pagina son N lecturas de cuenta para datos que la lista no enseña.
+     */
     @Transactional(readOnly = true)
     public InvoiceView findInvoiceById(Long invoiceId)
     {
-        return InvoiceView.from(invoiceRepository.findById(invoiceId)
+        var invoice = invoiceRepository.findById(invoiceId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.INVOICE_NOT_FOUND,
-                        "No existe la factura " + invoiceId + ".")));
+                        "No existe la factura " + invoiceId + "."));
+
+        return InvoiceView.of(invoice, linesOf(invoice.getTableAccountId()),
+                tableService.findById(invoice.getRestaurantTableId()).tableNumber());
+    }
+
+    /**
+     * Las lineas salen de la cuenta, no de la factura: el precio ya viene congelado en el
+     * order_item, asi que el comprobante suma igual que billPreview. Se omiten las
+     * canceladas, que tampoco entraron al subtotal.
+     *
+     * ponytail: el nombre del platillo se resuelve al imprimir, no al facturar, asi que
+     * renombrar un platillo renombra los comprobantes viejos. Congelarlo exige una tabla
+     * invoice_line y rellenarla para las facturas que ya existen.
+     */
+    private List<InvoiceLineView> linesOf(Long accountId)
+    {
+        var account   = tableAccountService.findById(accountId);
+        var lines     = new ArrayList<InvoiceLineView>();
+        Map<Long, String> dishNames = new HashMap<>();
+
+        for (OrderTicketView ticket : account.tickets())
+        {
+            for (OrderItemView item : ticket.items())
+            {
+                if (item.status() == OrderItemStatus.CANCELLED)
+                    continue;
+
+                var dishName = dishNames.computeIfAbsent(item.dishId(),
+                        id -> menuService.dishDetail(id).name());
+
+                lines.add(InvoiceLineView.of(item, dishName));
+            }
+        }
+
+        return lines;
     }
 
     public InvoiceView voidInvoice(Long invoiceId, VoidInvoiceDTO request)
