@@ -6,8 +6,10 @@ import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
 import com.cunoc.restaurant.common.security.CurrentUser;
 import com.cunoc.restaurant.inventory.InventoryService;
+import com.cunoc.restaurant.menu.ComboService;
 import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.menu.ModifierService;
+import com.cunoc.restaurant.menu.dto.ComboItemView;
 import com.cunoc.restaurant.menu.dto.ModifierView;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
@@ -26,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +50,7 @@ public class OrderService
     private final OrderItemModifierRepository modifierRepository;
     private final MenuService menuService;
     private final ModifierService modifierService;
+    private final ComboService comboService;
     private final InventoryService inventoryService;
     private final RestaurantTableService tableService;
     private final OrderViewAssembler views;
@@ -98,39 +102,11 @@ public class OrderService
         // que ordenar las lineas por su insumo menor antes de recorrerlas.
         for (var line : request.items())
         {
-            var item = new OrderItem();
-            item.setTicket(ticket);
-            item.setDishId(line.dishId());
-            item.setQuantity(line.quantity());
-            item.setUnitPrice(dishSalePrice(line.dishId()));
-            item.setUnitCost(menuService.productionCost(line.dishId()));
-            item.setNote(null);
-            item.setStatus(OrderItemStatus.RECEIVED);
-            item.setSubmittedAt(LocalDateTime.now());
-
-            itemRepository.save(item);
-            ticket.getOrderItems().add(item);
-
-            // Guardar modificadores
-            if (line.modifierIds() != null)
-            {
-                for (var modifierId : line.modifierIds())
-                {
-                    var modifier = new OrderItemModifier();
-                    modifier.setOrderItem(item);
-                    modifier.setDishModifierId(modifierId);
-                    modifier.setExtraPrice(modifierExtraPrice(line.dishId(), modifierId));
-                    modifierRepository.save(modifier);
-                }
-            }
-
-            var consumption = menuService.explodeRecipe(List.of(
-                    new com.cunoc.restaurant.menu.dto.OrderLineDTO(
-                            line.dishId(), line.quantity(), line.modifierIds())));
-            inventoryService.registerSaleConsumption(consumption, item.getOrderItemId(), userId);
-
-            log.info("Ítem {} agregado a comanda {}. Platillo: {}, cantidad: {}",
-                    item.getOrderItemId(), ticket.getOrderTicketId(), line.dishId(), line.quantity());
+            if (line.comboId() != null)
+                submitComboLine(ticket, line, userId);
+            else
+                persistItem(ticket, line.dishId(), null, line.quantity(),
+                        dishSalePrice(line.dishId()), line.note(), line.modifierIds(), userId);
         }
 
         log.info("Comanda {} enviada para cuenta {}. Ronda: {}",
@@ -306,6 +282,98 @@ public class OrderService
     }
 
     // --- Métodos auxiliares -------------------------------------------------
+
+    /**
+     * Un combo se expande en platillos (03 · §1.6): un order_item por componente,
+     * mismo combo_id, precio repartido en proporción al sale_price; el último tramo
+     * absorbe el centavo. explodeRecipe va por platillo, no por combo.
+     */
+    private void submitComboLine(OrderTicket ticket, OrderLineDTO line, Long userId)
+    {
+        if (line.modifierIds() != null && !line.modifierIds().isEmpty())
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Un combo no admite modificadores; aplíquelos al platillo suelto.");
+
+        var combo = comboService.findById(line.comboId());
+        if (!combo.active())
+            throw new BusinessException(ErrorCode.DISH_UNAVAILABLE,
+                    "El combo " + line.comboId() + " no está disponible.");
+
+        var components = combo.items() == null ? List.<ComboItemView>of() : combo.items();
+        if (components.isEmpty())
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "El combo " + line.comboId() + " no tiene platillos.");
+
+        int lineQty = line.quantity();
+        var charge = combo.comboPrice().multiply(BigDecimal.valueOf(lineQty));
+        var itemsTotal = BigDecimal.ZERO;
+        var qtys = new int[components.size()];
+        var weights = new BigDecimal[components.size()];
+        for (int i = 0; i < components.size(); i++)
+        {
+            var component = components.get(i);
+            qtys[i] = component.quantity() * lineQty;
+            weights[i] = component.salePrice().multiply(BigDecimal.valueOf(qtys[i]));
+            itemsTotal = itemsTotal.add(weights[i]);
+        }
+        if (itemsTotal.compareTo(BigDecimal.ZERO) <= 0)
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "El combo " + line.comboId() + " no tiene un precio de platillos válido.");
+
+        var allocated = BigDecimal.ZERO;
+        for (int i = 0; i < components.size(); i++)
+        {
+            var component = components.get(i);
+            BigDecimal lineTotal;
+            if (i == components.size() - 1)
+                lineTotal = charge.subtract(allocated);
+            else
+            {
+                lineTotal = charge.multiply(weights[i]).divide(itemsTotal, 2, RoundingMode.HALF_UP);
+                allocated = allocated.add(lineTotal);
+            }
+            var unitPrice = lineTotal.divide(BigDecimal.valueOf(qtys[i]), 2, RoundingMode.HALF_UP);
+            persistItem(ticket, component.dishId(), combo.comboId(), qtys[i],
+                    unitPrice, line.note(), null, userId);
+        }
+    }
+
+    private void persistItem(OrderTicket ticket, Long dishId, Long comboId, int quantity,
+                             BigDecimal unitPrice, String note, List<Long> modifierIds, Long userId)
+    {
+        var item = new OrderItem();
+        item.setTicket(ticket);
+        item.setDishId(dishId);
+        item.setComboId(comboId);
+        item.setQuantity(quantity);
+        item.setUnitPrice(unitPrice);
+        item.setUnitCost(menuService.productionCost(dishId));
+        item.setNote(note);
+        item.setStatus(OrderItemStatus.RECEIVED);
+        item.setSubmittedAt(LocalDateTime.now());
+
+        itemRepository.save(item);
+        ticket.getOrderItems().add(item);
+
+        if (modifierIds != null)
+        {
+            for (var modifierId : modifierIds)
+            {
+                var modifier = new OrderItemModifier();
+                modifier.setOrderItem(item);
+                modifier.setDishModifierId(modifierId);
+                modifier.setExtraPrice(modifierExtraPrice(dishId, modifierId));
+                modifierRepository.save(modifier);
+            }
+        }
+
+        var consumption = menuService.explodeRecipe(List.of(
+                new com.cunoc.restaurant.menu.dto.OrderLineDTO(dishId, quantity, modifierIds)));
+        inventoryService.registerSaleConsumption(consumption, item.getOrderItemId(), userId);
+
+        log.info("Ítem {} agregado a comanda {}. Platillo: {}, cantidad: {}",
+                item.getOrderItemId(), ticket.getOrderTicketId(), dishId, quantity);
+    }
 
     /** El precio se congela en la comanda: cambiarlo en el menu no altera ventas pasadas. */
     private BigDecimal dishSalePrice(Long dishId)
