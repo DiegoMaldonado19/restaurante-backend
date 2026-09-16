@@ -503,6 +503,30 @@ class TableAccountServiceTest
     }
 
     @Test
+    void findOpenByTableDevuelveLaCuentaVigente()
+    {
+        when(accountRepository.findByRestaurantTableIdAndStatusIn(TABLE_ID,
+                java.util.Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED)))
+                .thenReturn(Optional.of(account));
+
+        var view = accountService.findOpenByTable(TABLE_ID);
+
+        assertThat(view).isPresent();
+        assertThat(view.get().tableAccountId()).isEqualTo(ACCOUNT_ID);
+        assertThat(view.get().waiterName()).isEqualTo("Luis Gomez");
+    }
+
+    @Test
+    void findOpenByTableSinCuentaVivaEstaVacio()
+    {
+        when(accountRepository.findByRestaurantTableIdAndStatusIn(TABLE_ID,
+                java.util.Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED)))
+                .thenReturn(Optional.empty());
+
+        assertThat(accountService.findOpenByTable(TABLE_ID)).isEmpty();
+    }
+
+    @Test
     void findByIdSumaLineasVigentesComoRunningTotal()
     {
         attachItems(priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED),

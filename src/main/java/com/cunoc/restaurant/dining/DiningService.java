@@ -14,8 +14,6 @@ import com.cunoc.restaurant.dining.model.WaitlistEntry;
 import com.cunoc.restaurant.dining.model.WaitlistStatus;
 import com.cunoc.restaurant.ordering.TableAccountService;
 import com.cunoc.restaurant.ordering.dto.OpenAccountDTO;
-import com.cunoc.restaurant.ordering.dto.TableAccountView;
-import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
 import lombok.RequiredArgsConstructor;
@@ -263,20 +261,11 @@ public class DiningService
 
     private FloorPlanView buildFloorPlanRow(RestaurantTableView table, LocalDateTime endOfDay)
     {
-        FloorPlanView.OpenAccountSummary openAccount = null;
-        var openAccounts = tableAccountService.search(null, table.restaurantTableId(), null, null, null,
-                PageRequest.of(0, 5)).getContent();
-
-        var current = openAccounts.stream()
-                .filter(a -> a.status() == AccountStatus.OPEN || a.status() == AccountStatus.BILL_REQUESTED)
-                .findFirst();
-
-        if (current.isPresent())
-        {
-            TableAccountView a = current.get();
-            openAccount = new FloorPlanView.OpenAccountSummary(
-                    a.tableAccountId(), a.waiterName(), a.openedAt(), a.runningTotal());
-        }
+        FloorPlanView.OpenAccountSummary openAccount = tableAccountService
+                .findOpenByTable(table.restaurantTableId())
+                .map(a -> new FloorPlanView.OpenAccountSummary(
+                        a.tableAccountId(), a.waiterName(), a.openedAt(), a.runningTotal()))
+                .orElse(null);
 
         FloorPlanView.NextReservationSummary nextReservation = null;
         var upcoming = reservationRepository.search(LocalDateTime.now(), endOfDay, ReservationStatus.BOOKED,

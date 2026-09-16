@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -101,6 +102,18 @@ public class TableAccountService
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ACCOUNT_NOT_FOUND,
                         "No existe la cuenta " + accountId + "."));
         return views.toAccount(account);
+    }
+
+    /**
+     * Cuenta vigente de la mesa (OPEN o BILL_REQUESTED). El plano la usa para no
+     * confundir historial CLOSED con la cuenta viva.
+     */
+    @Transactional(readOnly = true)
+    public Optional<TableAccountView> findOpenByTable(Long tableId)
+    {
+        return accountRepository.findByRestaurantTableIdAndStatusIn(
+                        tableId, Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED))
+                .map(views::toAccount);
     }
 
     public TableAccountView transfer(Long accountId, TransferAccountDTO request)

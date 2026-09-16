@@ -24,6 +24,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -33,7 +34,10 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -308,5 +312,48 @@ class DiningServiceTest
 
         assertThatThrownBy(() -> diningService.removeWaitlistEntry(1L))
                 .isInstanceOf(BusinessException.class);
+    }
+
+    // --- Plano de mesas ------------------------------------------------------
+
+    @Test
+    void floorPlanConHistorialTraeLaCuentaVigente()
+    {
+        var occupied = new RestaurantTableView(TABLE_ID, 1, 4, TableZone.SALON, TableStatus.OCCUPIED);
+        var openedAt = LocalDateTime.now().minusHours(1);
+        var open = new TableAccountView(59L, TABLE_ID, 2, AccountStatus.OPEN, openedAt, null,
+                new TableAccountView.SplitsInfo(0, BigDecimal.ZERO, List.of()), List.of(),
+                new BigDecimal("175.00"), 3L, "Luis Gomez");
+
+        when(tableService.search(eq(null), eq(null), eq(null), eq(Pageable.unpaged())))
+                .thenReturn(new PageImpl<>(List.of(occupied)));
+        when(tableAccountService.findOpenByTable(TABLE_ID)).thenReturn(Optional.of(open));
+        when(reservationRepository.search(any(), any(), eq(ReservationStatus.BOOKED), eq(TABLE_ID), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        var plan = diningService.floorPlan();
+
+        assertThat(plan).hasSize(1);
+        assertThat(plan.get(0).status()).isEqualTo(TableStatus.OCCUPIED);
+        assertThat(plan.get(0).openAccount()).isNotNull();
+        assertThat(plan.get(0).openAccount().tableAccountId()).isEqualTo(59L);
+        assertThat(plan.get(0).openAccount().waiterName()).isEqualTo("Luis Gomez");
+        assertThat(plan.get(0).openAccount().runningTotal()).isEqualByComparingTo("175.00");
+        verify(tableAccountService, never()).search(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void floorPlanSinCuentaVivaNoInventaOpenAccount()
+    {
+        var occupied = new RestaurantTableView(TABLE_ID, 1, 4, TableZone.SALON, TableStatus.OCCUPIED);
+        when(tableService.search(eq(null), eq(null), eq(null), eq(Pageable.unpaged())))
+                .thenReturn(new PageImpl<>(List.of(occupied)));
+        when(tableAccountService.findOpenByTable(TABLE_ID)).thenReturn(Optional.empty());
+        when(reservationRepository.search(any(), any(), eq(ReservationStatus.BOOKED), eq(TABLE_ID), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        var plan = diningService.floorPlan();
+
+        assertThat(plan.get(0).openAccount()).isNull();
     }
 }
