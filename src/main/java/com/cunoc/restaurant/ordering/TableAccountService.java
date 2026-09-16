@@ -38,6 +38,7 @@ public class TableAccountService
     private final OrderTicketRepository ticketRepository;
     private final OrderItemRepository itemRepository;
     private final RestaurantTableService tableService;
+    private final OrderViewAssembler views;
 
     // --- Contrato público con los controladores ----------------------------
 
@@ -46,7 +47,7 @@ public class TableAccountService
                                          Long waiterId, LocalDateTime from, LocalDateTime to,
                                          Pageable pageable)
     {
-        return TableAccountView.page(accountRepository.search(status, tableId, waiterId, from, to, pageable));
+        return views.toAccountPage(accountRepository.search(status, tableId, waiterId, from, to, pageable));
     }
 
     public TableAccountView open(OpenAccountDTO request)
@@ -96,7 +97,7 @@ public class TableAccountService
         var account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ACCOUNT_NOT_FOUND,
                         "No existe la cuenta " + accountId + "."));
-        return TableAccountView.from(account);
+        return views.toAccount(account);
     }
 
     public TableAccountView transfer(Long accountId, TransferAccountDTO request)

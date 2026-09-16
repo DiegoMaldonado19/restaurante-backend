@@ -4,6 +4,12 @@ import com.cunoc.restaurant.common.enums.TableStatus;
 import com.cunoc.restaurant.common.enums.TableZone;
 import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
+import com.cunoc.restaurant.iam.AppUserService;
+import com.cunoc.restaurant.iam.dto.UserView;
+import com.cunoc.restaurant.iam.model.UserRole;
+import com.cunoc.restaurant.iam.model.UserStatus;
+import com.cunoc.restaurant.menu.MenuService;
+import com.cunoc.restaurant.menu.ModifierService;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.ordering.model.AccountSplit;
@@ -48,9 +54,16 @@ class TableAccountServiceTest
     private final OrderTicketRepository ticketRepository = mock(OrderTicketRepository.class);
     private final OrderItemRepository itemRepository = mock(OrderItemRepository.class);
     private final RestaurantTableService tableService = mock(RestaurantTableService.class);
+    private final MenuService menuService = mock(MenuService.class);
+    private final ModifierService modifierService = mock(ModifierService.class);
+    private final AppUserService appUserService = mock(AppUserService.class);
+    private final OrderItemModifierRepository modifierRepository = mock(OrderItemModifierRepository.class);
+    private final OrderViewAssembler views =
+            new OrderViewAssembler(menuService, modifierService, appUserService, modifierRepository);
 
     private final TableAccountService accountService =
-            new TableAccountService(accountRepository, splitRepository, ticketRepository, itemRepository, tableService);
+            new TableAccountService(accountRepository, splitRepository, ticketRepository, itemRepository,
+                    tableService, views);
 
     private TableAccount account;
 
@@ -101,6 +114,9 @@ class TableAccountServiceTest
         });
         when(tableService.findById(TABLE_ID)).thenReturn(
                 new RestaurantTableView(TABLE_ID, 1, 4, TableZone.SALON, TableStatus.FREE));
+        when(appUserService.findById(WAITER_ID)).thenReturn(
+                new UserView(WAITER_ID, "Luis Gomez", "mesero2", UserRole.WAITER, UserStatus.ACTIVE,
+                        LocalDateTime.now()));
     }
     @AfterEach
     void limpiarContextoDeSeguridad()
@@ -349,6 +365,17 @@ class TableAccountServiceTest
                 .isEqualTo(ErrorCode.ACCOUNT_MERGE_INVALID);
     }
 
+    // --- Consultar cuenta ----------------------------------------------------
+
+    @Test
+    void findByIdResuelveElNombreDelMesero()
+    {
+        var result = accountService.findById(ACCOUNT_ID);
+
+        assertThat(result.waiterName()).isEqualTo("Luis Gomez");
+        assertThat(result.waiterName()).doesNotStartWith("Waiter#");
+    }
+
     // --- Cancelar cuenta -----------------------------------------------------
 
     @Test
@@ -372,5 +399,6 @@ class TableAccountServiceTest
         var result = accountService.cancel(ACCOUNT_ID, request);
 
         assertThat(result.status()).isEqualTo(AccountStatus.CANCELLED);
+        assertThat(result.waiterName()).isEqualTo("Luis Gomez");
     }
 }

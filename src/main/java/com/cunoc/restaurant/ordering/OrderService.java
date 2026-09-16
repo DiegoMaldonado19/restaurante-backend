@@ -48,6 +48,7 @@ public class OrderService
     private final ModifierService modifierService;
     private final InventoryService inventoryService;
     private final RestaurantTableService tableService;
+    private final OrderViewAssembler views;
 
     // --- Máquina de estados del ítem ----------------------------------------
 
@@ -133,7 +134,7 @@ public class OrderService
         log.info("Comanda {} enviada para cuenta {}. Ronda: {}",
                 ticket.getOrderTicketId(), accountId, ticket.getSubmittedAt());
 
-        return OrderTicketView.from(ticket);
+        return views.toTicket(ticket);
     }
 
     // --- Ciclo de vida del ítem ---------------------------------------------
@@ -175,7 +176,7 @@ public class OrderService
         itemRepository.save(item);
         log.info("Ítem {} cambiado de {} a {}", orderItemId, currentStatus, targetStatus);
 
-        return OrderItemView.from(item);
+        return views.toItem(item);
     }
 
     /**
@@ -196,7 +197,7 @@ public class OrderService
 
         log.info("Ítem {} actualizado. Nueva cantidad: {}", orderItemId, request.quantity());
 
-        return OrderItemView.from(item);
+        return views.toItem(item);
     }
 
     /**
@@ -277,7 +278,7 @@ public class OrderService
         return itemRepository.searchQueue(status, tableId, waiterId, pageable)
                 .map(item ->
                 {
-                    var view = OrderItemView.from(item);
+                    var view = views.toItem(item);
                     // Calcular overdue dinámicamente
                     if (overdue != null && overdue)
                     {
@@ -302,7 +303,7 @@ public class OrderService
         var ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ORDER_NOT_FOUND,
                         "No existe la comanda " + ticketId + "."));
-        return OrderTicketView.from(ticket);
+        return views.toTicket(ticket);
     }
 
     // --- Métodos auxiliares -------------------------------------------------

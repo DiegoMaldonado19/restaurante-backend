@@ -3,6 +3,7 @@ package com.cunoc.restaurant.ordering;
 import com.cunoc.restaurant.common.enums.TableStatus;
 import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
+import com.cunoc.restaurant.iam.AppUserService;
 import com.cunoc.restaurant.inventory.InventoryService;
 import com.cunoc.restaurant.inventory.dto.SupplyConsumption;
 import com.cunoc.restaurant.menu.MenuService;
@@ -57,10 +58,13 @@ class OrderServiceTest
     private final ModifierService modifierService = mock(ModifierService.class);
     private final InventoryService inventoryService = mock(InventoryService.class);
     private final RestaurantTableService tableService = mock(RestaurantTableService.class);
+    private final AppUserService appUserService = mock(AppUserService.class);
+    private final OrderViewAssembler views =
+            new OrderViewAssembler(menuService, modifierService, appUserService, modifierRepository);
 
     private final OrderService orderService =
             new OrderService(accountRepository, ticketRepository, itemRepository, modifierRepository,
-                            menuService, modifierService, inventoryService, tableService);
+                            menuService, modifierService, inventoryService, tableService, views);
 
     private TableAccount account;
     private OrderItem item;
@@ -174,6 +178,23 @@ class OrderServiceTest
                 .isEqualTo(ErrorCode.ACCOUNT_NOT_OPEN);
     }
 
+    @Test
+    void findTicketResuelveElNombreDelPlatillo()
+    {
+        var ticket = new OrderTicket();
+        ticket.setOrderTicketId(81L);
+        ticket.setAccount(account);
+        ticket.setWaiterId(WAITER_ID);
+        ticket.setSubmittedAt(LocalDateTime.now());
+        ticket.setOrderItems(List.of(item));
+        when(ticketRepository.findById(81L)).thenReturn(Optional.of(ticket));
+
+        var result = orderService.findTicket(81L);
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).dishName()).isEqualTo("Hamburguesa");
+    }
+
     // --- Máquina de estados del ítem -----------------------------------------
 
     @Test
@@ -184,6 +205,7 @@ class OrderServiceTest
         var result = orderService.updateStatus(ITEM_ID, request);
 
         assertThat(result.status().name()).isEqualTo("IN_PREPARATION");
+        assertThat(result.dishName()).isEqualTo("Hamburguesa");
     }
 
     @Test
@@ -259,6 +281,7 @@ class OrderServiceTest
 
         assertThat(result.quantity()).isEqualTo(3);
         assertThat(result.note()).isEqualTo("Sin cebolla");
+        assertThat(result.dishName()).isEqualTo("Hamburguesa");
     }
 
     @Test
