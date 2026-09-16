@@ -164,26 +164,29 @@ public class TableAccountService
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                         "El número de personas para la división por persona debe estar entre 2 y 10.");
 
-            BigDecimal totalAmount = splitRepository.findByAccountTableAccountId(accountId)
-                    .stream()
-                    .map(AccountSplit::getShareAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            if (!splitRepository.findByAccountTableAccountId(accountId).isEmpty())
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "La cuenta " + accountId + " ya está dividida. Deshaga las sub-cuentas primero.");
 
-            BigDecimal shareAmount = totalAmount.divide(BigDecimal.valueOf(request.personCount()), 2, RoundingMode.HALF_UP);
+            int n = request.personCount();
+            BigDecimal totalAmount = views.vigentesTotal(account);
+            BigDecimal shareAmount = totalAmount.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP);
 
             List<AccountSplit> newSplits = new ArrayList<>();
-            for (int i = 1; i <= request.personCount(); i++)
+            for (int i = 1; i <= n; i++)
             {
                 var split = new AccountSplit();
                 split.setAccount(account);
                 split.setMode(com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON);
                 split.setLabel("Persona " + i);
-                split.setShareAmount(shareAmount);
+                split.setShareAmount(i == n
+                        ? totalAmount.subtract(shareAmount.multiply(BigDecimal.valueOf(n - 1)))
+                        : shareAmount);
                 split.setCreatedAt(LocalDateTime.now());
                 newSplits.add(split);
             }
             splitRepository.saveAll(newSplits);
-            log.info("Cuenta {} dividida en {} partes iguales. Monto por parte: {}", accountId, request.personCount(), shareAmount);
+            log.info("Cuenta {} dividida en {} partes iguales. Monto por parte: {}", accountId, n, shareAmount);
             return newSplits.stream().map(AccountSplitView::from).collect(Collectors.toList());
         }
         else // BY_ITEM

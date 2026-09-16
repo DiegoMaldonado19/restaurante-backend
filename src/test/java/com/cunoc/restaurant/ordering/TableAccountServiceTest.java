@@ -14,6 +14,8 @@ import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.ordering.model.AccountSplit;
 import com.cunoc.restaurant.ordering.model.OrderItem;
+import com.cunoc.restaurant.ordering.model.OrderItemStatus;
+import com.cunoc.restaurant.ordering.model.OrderTicket;
 import com.cunoc.restaurant.ordering.model.TableAccount;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import com.cunoc.restaurant.restaurant.dto.RestaurantTableView;
@@ -25,6 +27,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -133,17 +136,53 @@ class TableAccountServiceTest
     @Test
     void splitPorPersonaN_creaSubCuentasConMontoIgual()
     {
+        attachItems(priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED),
+                    priced(new BigDecimal("65.00"), 1, OrderItemStatus.DELIVERED));
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON, 2, null);
+
+        var splits = accountService.split(ACCOUNT_ID, request);
+
+        assertThat(splits).hasSize(2);
+        assertThat(splits).allSatisfy(split ->
+        {
+            assertThat(split.label()).startsWith("Persona");
+            assertThat(split.mode()).isEqualTo(com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON);
+            assertThat(split.shareAmount()).isEqualByComparingTo("60.00");
+        });
+    }
+
+    @Test
+    void splitPorPersonaElUltimoTramoAbsorbeElRedondeo()
+    {
+        attachItems(priced(new BigDecimal("10.00"), 1, OrderItemStatus.DELIVERED));
+
         var request = new SplitAccountDTO(
                 com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON, 3, null);
 
         var splits = accountService.split(ACCOUNT_ID, request);
 
         assertThat(splits).hasSize(3);
-        assertThat(splits).allSatisfy(split ->
-        {
-            assertThat(split.label()).startsWith("Persona");
-            assertThat(split.mode()).isEqualTo(com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON);
-        });
+        assertThat(splits.get(0).shareAmount()).isEqualByComparingTo("3.33");
+        assertThat(splits.get(1).shareAmount()).isEqualByComparingTo("3.33");
+        assertThat(splits.get(2).shareAmount()).isEqualByComparingTo("3.34");
+    }
+
+    @Test
+    void splitPorPersonaConCuentaYaDivididaFalla()
+    {
+        var existing = new AccountSplit();
+        existing.setAccountSplitId(50L);
+        when(splitRepository.findByAccountTableAccountId(ACCOUNT_ID)).thenReturn(List.of(existing));
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON, 2, null);
+
+        assertThatThrownBy(() -> accountService.split(ACCOUNT_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
     }
 
     @Test
@@ -376,6 +415,23 @@ class TableAccountServiceTest
         assertThat(result.waiterName()).doesNotStartWith("Waiter#");
     }
 
+    @Test
+    void findByIdSumaLineasVigentesComoRunningTotal()
+    {
+        attachItems(priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED),
+                    priced(new BigDecimal("65.00"), 1, OrderItemStatus.RECEIVED),
+                    priced(new BigDecimal("12.00"), 1, OrderItemStatus.CANCELLED));
+        when(menuService.dishDetail(any())).thenReturn(
+                new com.cunoc.restaurant.menu.dto.DishDetailView(
+                        1L, 1L, "Fuertes", "Hamburguesa", null, new BigDecimal("55.00"),
+                        null, 15, true, true, new BigDecimal("12.00"), new BigDecimal("78.00"), true, null));
+        when(modifierRepository.findByOrderItemOrderItemId(any())).thenReturn(List.of());
+
+        var result = accountService.findById(ACCOUNT_ID);
+
+        assertThat(result.runningTotal()).isEqualByComparingTo("120.00");
+    }
+
     // --- Cancelar cuenta -----------------------------------------------------
 
     @Test
@@ -400,5 +456,27 @@ class TableAccountServiceTest
 
         assertThat(result.status()).isEqualTo(AccountStatus.CANCELLED);
         assertThat(result.waiterName()).isEqualTo("Luis Gomez");
+    }
+
+    private void attachItems(OrderItem... items)
+    {
+        var ticket = new OrderTicket();
+        ticket.setAccount(account);
+        ticket.setWaiterId(WAITER_ID);
+        ticket.setSubmittedAt(LocalDateTime.now());
+        ticket.setOrderItems(List.of(items));
+        account.setOrderTickets(new ArrayList<>(List.of(ticket)));
+    }
+
+    private static OrderItem priced(BigDecimal unitPrice, int quantity, OrderItemStatus status)
+    {
+        var item = new OrderItem();
+        item.setDishId(1L);
+        item.setQuantity(quantity);
+        item.setUnitPrice(unitPrice);
+        item.setUnitCost(BigDecimal.ZERO);
+        item.setStatus(status);
+        item.setSubmittedAt(LocalDateTime.now());
+        return item;
     }
 }

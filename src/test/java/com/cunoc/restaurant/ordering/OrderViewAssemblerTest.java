@@ -114,17 +114,48 @@ class OrderViewAssemblerTest
     }
 
     @Test
-    void toAccountSigueUsandoLaSumaDeSplitsComoRunningTotal()
+    void toAccountSumaLineasVigentesComoRunningTotal()
     {
-        var split = new AccountSplit();
-        split.setShareAmount(new BigDecimal("30.00"));
+        var pollo = priced(new BigDecimal("65.00"), 1, OrderItemStatus.RECEIVED);
+        pollo.setOrderItemId(201L);
+        pollo.setDishId(DISH_ID);
+        when(modifierRepository.findByOrderItemOrderItemId(201L)).thenReturn(List.of());
 
         var account = account();
+        var ticket = new OrderTicket();
+        ticket.setAccount(account);
+        ticket.setOrderItems(List.of(item, pollo));
+        account.setOrderTickets(List.of(ticket));
+
+        var split = new AccountSplit();
+        split.setShareAmount(new BigDecimal("30.00"));
         account.setAccountSplits(List.of(split));
 
         var view = views.toAccount(account);
 
-        assertThat(view.runningTotal()).isEqualByComparingTo("30.00");
+        assertThat(view.runningTotal()).isEqualByComparingTo("120.00");
+        assertThat(view.splits().totalAmount()).isEqualByComparingTo("30.00");
+    }
+
+    @Test
+    void toAccountNoSumaLineasCanceladasNiNoDisponibles()
+    {
+        var cancelado = priced(new BigDecimal("55.00"), 1, OrderItemStatus.CANCELLED);
+        cancelado.setOrderItemId(201L);
+        cancelado.setDishId(DISH_ID);
+        var noDisponible = priced(new BigDecimal("12.00"), 2, OrderItemStatus.UNAVAILABLE);
+        noDisponible.setOrderItemId(202L);
+        noDisponible.setDishId(DISH_ID);
+        when(modifierRepository.findByOrderItemOrderItemId(201L)).thenReturn(List.of());
+        when(modifierRepository.findByOrderItemOrderItemId(202L)).thenReturn(List.of());
+
+        var account = account();
+        var ticket = new OrderTicket();
+        ticket.setAccount(account);
+        ticket.setOrderItems(List.of(item, cancelado, noDisponible));
+        account.setOrderTickets(List.of(ticket));
+
+        assertThat(views.toAccount(account).runningTotal()).isEqualByComparingTo("55.00");
     }
 
     @Test
@@ -155,6 +186,17 @@ class OrderViewAssemblerTest
         account.setAccountSplits(new ArrayList<>());
         account.setOrderTickets(new ArrayList<>());
         return account;
+    }
+
+    private static OrderItem priced(BigDecimal unitPrice, int quantity, OrderItemStatus status)
+    {
+        var line = new OrderItem();
+        line.setQuantity(quantity);
+        line.setUnitPrice(unitPrice);
+        line.setUnitCost(BigDecimal.ZERO);
+        line.setStatus(status);
+        line.setSubmittedAt(LocalDateTime.now());
+        return line;
     }
 
     private static DishDetailView dish(String name)

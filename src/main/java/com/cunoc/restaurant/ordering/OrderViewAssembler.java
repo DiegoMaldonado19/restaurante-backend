@@ -19,12 +19,13 @@ import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 
 /**
  * Arma las vistas de ordering resolviendo lo que las entidades no pueden leer:
  * el nombre del platillo y de los modificadores (menu) y el del mesero (iam).
- * overdue y running_total se dejan como estan: los calculan las fases 4 y 2.
+ * overdue se deja en false: lo calcula la fase 4.
  */
 @Component
 @RequiredArgsConstructor
@@ -91,7 +92,7 @@ class OrderViewAssembler
                 account.getClosedAt(),
                 new TableAccountView.SplitsInfo(splits.size(), splitTotal),
                 tickets.stream().map(this::toTicket).toList(),
-                splitTotal,
+                vigentesTotal(account),
                 account.getWaiterId(),
                 appUserService.findById(account.getWaiterId()).fullName());
     }
@@ -99,6 +100,36 @@ class OrderViewAssembler
     Page<TableAccountView> toAccountPage(Page<TableAccount> page)
     {
         return page.map(this::toAccount);
+    }
+
+    /**
+     * Suma unit_price × quantity de las lineas no CANCELLED y no UNAVAILABLE.
+     * La usan running_total y el split BY_PERSON, para que mapa, detalle y cobro
+     * hablen del mismo numero.
+     */
+    BigDecimal vigentesTotal(TableAccount account)
+    {
+        var tickets = account.getOrderTickets() == null ? List.<OrderTicket>of() : account.getOrderTickets();
+        var total = BigDecimal.ZERO;
+
+        for (var ticket : tickets)
+        {
+            var items = ticket.getOrderItems() == null ? List.<OrderItem>of() : ticket.getOrderItems();
+            for (var line : items)
+            {
+                if (!esVigente(line) || line.getUnitPrice() == null)
+                    continue;
+                total = total.add(line.getUnitPrice().multiply(BigDecimal.valueOf(line.getQuantity())));
+            }
+        }
+
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    static boolean esVigente(OrderItem item)
+    {
+        return item.getStatus() != OrderItemStatus.CANCELLED
+                && item.getStatus() != OrderItemStatus.UNAVAILABLE;
     }
 
     private List<DishModifierView> modifiersOf(OrderItem item)
