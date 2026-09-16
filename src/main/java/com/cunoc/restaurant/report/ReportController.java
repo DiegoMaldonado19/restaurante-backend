@@ -76,8 +76,8 @@ public class ReportController
             @RequestParam(name = "category_id", required = false)   Long        categoryId,
             @RequestParam(name = "waiter_id",   required = false)   Long        waiterId,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                           String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                           String      format)
     {
         return respond(format, "ventas", SalesRowView.class,
                        reportService.sales(range, groupBy, categoryId, waiterId));
@@ -100,8 +100,8 @@ public class ReportController
             @Max(value = 100, message = "El limite maximo es 100")    int         limit,
             @RequestParam(name = "category_id", required = false)   Long        categoryId,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                           String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                           String      format)
     {
         return respond(format, "platillos", DishRankingRowView.class,
                        reportService.dishRanking(range, order, limit, categoryId));
@@ -118,8 +118,8 @@ public class ReportController
             @ParameterObject @Valid                                 ReportRange range,
             @RequestParam(name = "category_id", required = false)   Long        categoryId,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                           String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                           String      format)
     {
         return respond(format, "rentabilidad", DishProfitabilityRowView.class,
                        reportService.dishProfitability(range, categoryId));
@@ -136,8 +136,8 @@ public class ReportController
             @RequestParam(name = "low_stock_only", defaultValue = "false") boolean lowStockOnly,
             @RequestParam(name = "category_id",    required = false)       Long    categoryId,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                                  String  format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                                  String  format)
     {
         return respond(format, "inventario", InventoryRowView.class,
                        reportService.inventory(lowStockOnly, categoryId));
@@ -154,8 +154,8 @@ public class ReportController
             @ParameterObject @Valid                                 ReportRange range,
             @RequestParam(name = "supply_id", required = false)     Long        supplyId,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                           String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                           String      format)
     {
         return respond(format, "mermas", WasteRowView.class, reportService.waste(range, supplyId));
     }
@@ -171,8 +171,8 @@ public class ReportController
             @ParameterObject @Valid                     ReportRange range,
             @RequestParam(required = false)             TableZone   zone,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")               String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")               String      format)
     {
         return respond(format, "ocupacion", TableOccupancyRowView.class,
                        reportService.tableOccupancy(range, zone));
@@ -188,8 +188,8 @@ public class ReportController
     public ResponseEntity<?> waiterPerformance(
             @ParameterObject @Valid                     ReportRange range,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")               String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")               String      format)
     {
         return respond(format, "meseros", WaiterPerformanceRowView.class,
                        reportService.waiterPerformance(range));
@@ -207,8 +207,8 @@ public class ReportController
             @RequestParam(defaultValue = "20") @Min(value = 1,   message = "El limite minimo es 1")
             @Max(value = 100, message = "El limite maximo es 100")    int         limit,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                           String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                           String      format)
     {
         return respond(format, "fidelizacion", LoyaltyRowView.class,
                        reportService.loyalty(range, limit));
@@ -225,25 +225,36 @@ public class ReportController
             @ParameterObject @Valid                                 ReportRange range,
             @RequestParam(name = "cashier_id", required = false)    Long        cashierId,
             @RequestParam(defaultValue = "json")
-            @Pattern(regexp = "json|csv",
-                     message = "Los formatos validos son json o csv")                           String      format)
+            @Pattern(regexp = "json|csv|xlsx",
+                     message = "Los formatos validos son json, csv o xlsx")                           String      format)
     {
         return respond(format, "cuadres", CashShiftRowView.class,
                        reportService.cashShifts(range, cashierId));
     }
 
     /** El unico punto que decide entre JSON y CSV: los nueve endpoints pasan por aqui. */
+    private static final MediaType XLSX =
+            MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
     private <T extends Record> ResponseEntity<?> respond(String format, String name,
                                                          Class<T> rowType, List<T> rows)
     {
-        if (!"csv".equalsIgnoreCase(format))
+        if ("csv".equalsIgnoreCase(format))
         {
-            return ResponseEntity.ok(rows);
+            return ResponseEntity.ok()
+                    .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + name + ".csv\"")
+                    .body(ReportCsv.of(rowType, rows));
         }
 
-        return ResponseEntity.ok()
-                .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + name + ".csv\"")
-                .body(ReportCsv.of(rowType, rows));
+        if ("xlsx".equalsIgnoreCase(format))
+        {
+            return ResponseEntity.ok()
+                    .contentType(XLSX)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + name + ".xlsx\"")
+                    .body(ReportXlsx.of(name, rowType, rows));
+        }
+
+        return ResponseEntity.ok(rows);
     }
 }

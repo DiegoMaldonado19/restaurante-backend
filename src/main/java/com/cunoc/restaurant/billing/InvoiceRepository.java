@@ -8,11 +8,13 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 public interface InvoiceRepository extends JpaRepository<Invoice, Long>
 {
-    Optional<Invoice> findByTableAccountId(Long tableAccountId);
+    /** Lista, no Optional: una cuenta dividida acumula una factura por sub-cuenta. */
+    List<Invoice> findByTableAccountId(Long tableAccountId);
 
     Optional<Invoice> findByAccountSplitId(Long accountSplitId);
 

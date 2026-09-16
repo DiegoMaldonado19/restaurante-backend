@@ -42,7 +42,8 @@ public final class ReportCsv
         return out.toString();
     }
 
-    private static Object read(RecordComponent component, Record row)
+    /** Compartido con {@link ReportXlsx}: los dos leen las columnas del mismo record. */
+    static Object read(RecordComponent component, Record row)
     {
         try
         {

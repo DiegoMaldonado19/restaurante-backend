@@ -7,6 +7,7 @@ import com.cunoc.restaurant.billing.dto.InvoiceLineView;
 import com.cunoc.restaurant.billing.dto.InvoiceView;
 import com.cunoc.restaurant.billing.dto.RateServiceDTO;
 import com.cunoc.restaurant.billing.dto.ServiceRatingView;
+import com.cunoc.restaurant.billing.dto.SplitPreviewView;
 import com.cunoc.restaurant.billing.dto.VoidInvoiceDTO;
 import com.cunoc.restaurant.billing.model.Invoice;
 import com.cunoc.restaurant.billing.model.InvoicePayment;
@@ -26,6 +27,7 @@ import com.cunoc.restaurant.ordering.dto.OrderItemView;
 import com.cunoc.restaurant.ordering.dto.OrderTicketView;
 import com.cunoc.restaurant.ordering.dto.TableAccountView;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
+import com.cunoc.restaurant.ordering.model.SplitMode;
 import com.cunoc.restaurant.restaurant.RestaurantSettingService;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import lombok.RequiredArgsConstructor;
@@ -41,6 +43,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -70,7 +74,7 @@ public class BillingService
         {
             for (OrderItemView item : ticket.items())
             {
-                if (item.status() == OrderItemStatus.CANCELLED)
+                if (!esVigente(item))
                     continue;
 
                 var lineTotal = item.unitPrice().multiply(BigDecimal.valueOf(item.quantity()));
@@ -82,10 +86,8 @@ public class BillingService
         var tipAmount = percentOf(subtotal, setting.tipSuggestedPercent());
         var total     = subtotal.add(taxAmount);
 
-        // ponytail: el desglose por sub-cuenta va vacio. Cobrar por sub-cuenta exige que
-        // validateNotAlreadyInvoiced deje de mirar la cuenta entera; queda como pendiente.
         return new BillPreviewView(accountId, subtotal, setting.taxPercent(), taxAmount,
-                setting.tipSuggestedPercent(), tipAmount, total, List.of());
+                setting.tipSuggestedPercent(), tipAmount, total, splitsOf(account));
     }
 
     /**
@@ -104,12 +106,14 @@ public class BillingService
         var account = tableAccountService.findById(accountId);
 
         validateNoPendingItems(account);
-        validateNotAlreadyInvoiced(accountId);
+        validateNotAlreadyInvoiced(accountId, request.accountSplitId());
 
         var preview = billPreview(accountId);
 
+        var subtotal   = subtotalToCharge(preview, request.accountSplitId());
+        var taxAmount  = percentOf(subtotal, preview.taxPercent());
         var tipAmount  = request.tipAmount() != null ? request.tipAmount() : BigDecimal.ZERO;
-        var grossTotal = preview.subtotal().add(preview.taxAmount()).add(tipAmount);
+        var grossTotal = subtotal.add(taxAmount).add(tipAmount);
 
         int redeemedPoints  = 0;
         var discountAmount  = BigDecimal.ZERO;
@@ -138,9 +142,9 @@ public class BillingService
         invoice.setCashierId(cashierId);
         invoice.setWaiterId(account.waiterId());
         invoice.setCustomerId(request.customerId());
-        invoice.setSubtotal(preview.subtotal());
+        invoice.setSubtotal(subtotal);
         invoice.setDiscountAmount(discountAmount);
-        invoice.setTaxAmount(preview.taxAmount());
+        invoice.setTaxAmount(taxAmount);
         invoice.setTipAmount(tipAmount);
         invoice.setTotal(total);
         invoice.setRedeemedPoints(redeemedPoints);
@@ -149,7 +153,9 @@ public class BillingService
 
         invoice = invoiceRepository.save(invoice);
 
-        tableAccountService.close(accountId);
+        // Dividida, la cuenta se cierra cuando se cobra la ultima sub-cuenta; entera, de una vez.
+        if (request.accountSplitId() == null || invoiceRepository.findByTableAccountId(accountId).size() >= preview.splits().size())
+            tableAccountService.close(accountId);
 
         registerPayments(request.payments(), invoice, cashierId, tipAmount, total);
 
@@ -159,7 +165,7 @@ public class BillingService
 
         if (request.customerId() != null)
         {
-            var netSale       = preview.subtotal().subtract(discountAmount).max(BigDecimal.ZERO);
+            var netSale       = subtotal.subtract(discountAmount).max(BigDecimal.ZERO);
             var accruedPoints = accruePointsAndReturn(request.customerId(), netSale, invoice.getInvoiceId());
             invoice.setAccruedPoints(accruedPoints);
             invoice = invoiceRepository.save(invoice);
@@ -180,7 +186,7 @@ public class BillingService
                 .orElseThrow(() -> new NotFoundException(ErrorCode.INVOICE_NOT_FOUND,
                         "No existe la factura " + invoiceId + "."));
 
-        return InvoiceView.of(invoice, linesOf(invoice.getTableAccountId()),
+        return InvoiceView.of(invoice, linesOf(invoice),
                 tableService.findById(invoice.getRestaurantTableId()).tableNumber());
     }
 
@@ -193,17 +199,21 @@ public class BillingService
      * renombrar un platillo renombra los comprobantes viejos. Congelarlo exige una tabla
      * invoice_line y rellenarla para las facturas que ya existen.
      */
-    private List<InvoiceLineView> linesOf(Long accountId)
+    private List<InvoiceLineView> linesOf(Invoice invoice)
     {
-        var account   = tableAccountService.findById(accountId);
-        var lines     = new ArrayList<InvoiceLineView>();
+        var account    = tableAccountService.findById(invoice.getTableAccountId());
+        var splitItems = itemIdsOfSplit(account, invoice.getAccountSplitId());
+        var lines      = new ArrayList<InvoiceLineView>();
         Map<Long, String> dishNames = new HashMap<>();
 
         for (OrderTicketView ticket : account.tickets())
         {
             for (OrderItemView item : ticket.items())
             {
-                if (item.status() == OrderItemStatus.CANCELLED)
+                if (!esVigente(item))
+                    continue;
+
+                if (!splitItems.isEmpty() && !splitItems.contains(item.orderItemId()))
                     continue;
 
                 var dishName = dishNames.computeIfAbsent(item.dishId(),
@@ -214,6 +224,24 @@ public class BillingService
         }
 
         return lines;
+    }
+
+    /**
+     * Los items que reparte la sub-cuenta, o vacio si la factura los cubre todos. Solo la
+     * division por item reparte platillos: la division por persona es una fraccion de la
+     * cuenta entera, asi que su comprobante lleva el detalle completo.
+     */
+    private Set<Long> itemIdsOfSplit(TableAccountView account, Long accountSplitId)
+    {
+        if (accountSplitId == null || account.splits() == null || account.splits().accounts() == null)
+            return Set.of();
+
+        return account.splits().accounts().stream()
+                .filter(split -> accountSplitId.equals(split.accountSplitId()))
+                .filter(split -> split.mode() == SplitMode.BY_ITEM)
+                .findFirst()
+                .map(split -> split.items().stream().map(OrderItemView::orderItemId).collect(Collectors.toSet()))
+                .orElseGet(Set::of);
     }
 
     public InvoiceView voidInvoice(Long invoiceId, VoidInvoiceDTO request)
@@ -345,20 +373,64 @@ public class BillingService
     {
         var hayPendientes = account.tickets().stream()
                 .flatMap(ticket -> ticket.items().stream())
-                .anyMatch(item -> item.status() != OrderItemStatus.DELIVERED
-                                && item.status() != OrderItemStatus.CANCELLED);
+                .anyMatch(item -> esVigente(item) && item.status() != OrderItemStatus.DELIVERED);
 
         if (hayPendientes)
             throw new BusinessException(ErrorCode.ACCOUNT_HAS_PENDING_ORDERS,
                     "La cuenta " + account.tableAccountId() + " tiene items sin entregar. Entregarlos antes de facturar.");
     }
 
-    private void validateNotAlreadyInvoiced(Long accountId)
+    /** Un item UNAVAILABLE ya devolvio su stock: ni se cobra ni bloquea el cobro, igual que uno anulado. */
+    private static boolean esVigente(OrderItemView item)
     {
-        invoiceRepository.findByTableAccountId(accountId).ifPresent(existing ->
+        return item.status() != OrderItemStatus.CANCELLED
+            && item.status() != OrderItemStatus.UNAVAILABLE;
+    }
+
+    /**
+     * Cobrar dividido factura una sub-cuenta a la vez, asi que lo que no se puede repetir
+     * es la sub-cuenta, no la cuenta. Sin sub-cuenta se sigue mirando la cuenta entera.
+     */
+    private void validateNotAlreadyInvoiced(Long accountId, Long accountSplitId)
+    {
+        if (accountSplitId != null)
+        {
+            invoiceRepository.findByAccountSplitId(accountSplitId).ifPresent(existing ->
+            {
+                throw new BusinessException(ErrorCode.SPLIT_ALREADY_INVOICED,
+                        "La sub-cuenta " + accountSplitId + " ya fue facturada (factura " + existing.getInvoiceNumber() + ").");
+            });
+            return;
+        }
+
+        invoiceRepository.findByTableAccountId(accountId).stream().findFirst().ifPresent(existing ->
         {
             throw new BusinessException(ErrorCode.ACCOUNT_ALREADY_INVOICED,
                     "La cuenta " + accountId + " ya fue facturada (factura " + existing.getInvoiceNumber() + ").");
         });
+    }
+
+    private List<SplitPreviewView> splitsOf(TableAccountView account)
+    {
+        if (account.splits() == null || account.splits().accounts() == null)
+            return List.of();
+
+        return account.splits().accounts().stream()
+                .map(split -> new SplitPreviewView(split.accountSplitId(), split.label(), split.shareAmount()))
+                .toList();
+    }
+
+    /** El subtotal de la sub-cuenta cuando se cobra dividido; el de la cuenta entera si no. */
+    private static BigDecimal subtotalToCharge(BillPreviewView preview, Long accountSplitId)
+    {
+        if (accountSplitId == null)
+            return preview.subtotal();
+
+        return preview.splits().stream()
+                .filter(split -> accountSplitId.equals(split.accountSplitId()))
+                .findFirst()
+                .map(SplitPreviewView::subtotal)
+                .orElseThrow(() -> new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "La sub-cuenta " + accountSplitId + " no pertenece a la cuenta " + preview.accountId() + "."));
     }
 }
