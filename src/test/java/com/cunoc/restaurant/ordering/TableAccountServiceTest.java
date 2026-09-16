@@ -70,9 +70,13 @@ class TableAccountServiceTest
 
     private TableAccount account;
 
+    private long nextSplitId;
+
     @BeforeEach
     void setUp()
     {
+        nextSplitId = 100L;
+
         // Mock security context
         var jwt = mock(Jwt.class);
         when(jwt.getSubject()).thenReturn(String.valueOf(WAITER_ID));
@@ -97,21 +101,17 @@ class TableAccountServiceTest
         {
             var split = inv.getArgument(0, AccountSplit.class);
             if (split.getAccountSplitId() == null)
-            {
-                split.setAccountSplitId(100L); // ID fijo para testing
-            }
+                split.setAccountSplitId(nextSplitId++);
             return split;
         });
         when(splitRepository.saveAll(any())).thenAnswer(inv ->
         {
-            var splits = inv.getArgument(0, List.class);
+            var splits = (Iterable<?>) inv.getArgument(0);
             for (Object obj : splits)
             {
                 var split = (AccountSplit) obj;
                 if (split.getAccountSplitId() == null)
-                {
-                    split.setAccountSplitId(100L); // ID fijo para testing
-                }
+                    split.setAccountSplitId(nextSplitId++);
             }
             return splits;
         });
@@ -224,34 +224,121 @@ class TableAccountServiceTest
     }
 
     @Test
+    void splitPorItemConGrupos1y2CreaUnaSubCuentaPorGrupo()
+    {
+        var hamburguesa = priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED);
+        var gaseosa = priced(new BigDecimal("12.00"), 1, OrderItemStatus.DELIVERED);
+        attachItems(hamburguesa, gaseosa);
+        stubDishName();
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(hamburguesa.getOrderItemId(), 1L),
+                        new SplitLineDTO(gaseosa.getOrderItemId(), 2L)));
+
+        var splits = accountService.split(ACCOUNT_ID, request);
+
+        assertThat(splits).hasSize(2);
+        assertThat(splits.get(0).label()).isEqualTo("Parte 1");
+        assertThat(splits.get(1).label()).isEqualTo("Parte 2");
+        assertThat(splits.get(0).accountSplitId()).isEqualTo(100L);
+        assertThat(splits.get(1).accountSplitId()).isEqualTo(101L);
+        assertThat(splits.get(0).shareAmount()).isEqualByComparingTo("55.00");
+        assertThat(splits.get(1).shareAmount()).isEqualByComparingTo("12.00");
+        assertThat(splits.get(0).items()).hasSize(1);
+        assertThat(splits.get(1).items()).hasSize(1);
+        assertThat(splits.get(0).items().get(0).orderItemId()).isEqualTo(hamburguesa.getOrderItemId());
+        assertThat(splits.get(1).items().get(0).orderItemId()).isEqualTo(gaseosa.getOrderItemId());
+        assertThat(hamburguesa.getSplit().getAccountSplitId()).isEqualTo(100L);
+        assertThat(gaseosa.getSplit().getAccountSplitId()).isEqualTo(101L);
+    }
+
+    @Test
+    void splitPorItemMismoGrupoSumaElShareAmount()
+    {
+        var hamburguesa = priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED);
+        var gaseosa = priced(new BigDecimal("12.00"), 1, OrderItemStatus.DELIVERED);
+        attachItems(hamburguesa, gaseosa);
+        stubDishName();
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(hamburguesa.getOrderItemId(), 1L),
+                        new SplitLineDTO(gaseosa.getOrderItemId(), 1L)));
+
+        var splits = accountService.split(ACCOUNT_ID, request);
+
+        assertThat(splits).hasSize(1);
+        assertThat(splits.get(0).shareAmount()).isEqualByComparingTo("67.00");
+        assertThat(splits.get(0).items()).hasSize(2);
+    }
+
+    @Test
     void splitPorItemConItemYaAsignadoLanzaError()
     {
-        // Crear un ítem ya asignado a otro split
         var existingSplit = new AccountSplit();
         existingSplit.setAccountSplitId(99L);
 
-        var item = new OrderItem();
-        item.setOrderItemId(1L);
+        var item = priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED);
         item.setSplit(existingSplit);
-
-        // Crear un split nuevo que será devuelto por el repositorio
-        var newSplit = new AccountSplit();
-        newSplit.setAccountSplitId(100L);
-        newSplit.setAccount(account);
-
-        var line = new SplitLineDTO(1L, 100L);
-
-        when(itemRepository.findById(1L)).thenReturn(Optional.of(item));
-        when(splitRepository.findById(100L)).thenReturn(Optional.of(newSplit));
-        when(splitRepository.findByAccountTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
+        attachItems(item);
 
         var request = new SplitAccountDTO(
-                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null, List.of(line));
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(item.getOrderItemId(), 1L)));
 
         assertThatThrownBy(() -> accountService.split(ACCOUNT_ID, request))
                 .isInstanceOf(BusinessException.class)
                 .extracting(ex -> ((BusinessException) ex).getErrorCode())
                 .isEqualTo(ErrorCode.SPLIT_ITEMS_MISMATCH);
+    }
+
+    @Test
+    void splitPorItemDejaFueraUnEntregableFalla()
+    {
+        var hamburguesa = priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED);
+        var gaseosa = priced(new BigDecimal("12.00"), 1, OrderItemStatus.DELIVERED);
+        attachItems(hamburguesa, gaseosa);
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(hamburguesa.getOrderItemId(), 1L)));
+
+        assertThatThrownBy(() -> accountService.split(ACCOUNT_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.SPLIT_ITEMS_MISMATCH);
+    }
+
+    @Test
+    void splitPorItemGrupoNoPositivoFalla()
+    {
+        var item = priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED);
+        attachItems(item);
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(item.getOrderItemId(), 0L)));
+
+        assertThatThrownBy(() -> accountService.split(ACCOUNT_ID, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
+    }
+
+    @Test
+    void splitPorItemItemDeOtraCuentaFalla()
+    {
+        attachItems(priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED));
+
+        var request = new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(999L, 1L)));
+
+        assertThatThrownBy(() -> accountService.split(ACCOUNT_ID, request))
+                .isInstanceOf(com.cunoc.restaurant.common.exception.NotFoundException.class)
+                .extracting(ex -> ((com.cunoc.restaurant.common.exception.NotFoundException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ORDER_ITEM_NOT_FOUND);
     }
 
     // --- Eliminar sub-cuenta -------------------------------------------------
@@ -421,15 +508,35 @@ class TableAccountServiceTest
         attachItems(priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED),
                     priced(new BigDecimal("65.00"), 1, OrderItemStatus.RECEIVED),
                     priced(new BigDecimal("12.00"), 1, OrderItemStatus.CANCELLED));
-        when(menuService.dishDetail(any())).thenReturn(
-                new com.cunoc.restaurant.menu.dto.DishDetailView(
-                        1L, 1L, "Fuertes", "Hamburguesa", null, new BigDecimal("55.00"),
-                        null, 15, true, true, new BigDecimal("12.00"), new BigDecimal("78.00"), true, null));
-        when(modifierRepository.findByOrderItemOrderItemId(any())).thenReturn(List.of());
+        stubDishName();
 
         var result = accountService.findById(ACCOUNT_ID);
 
         assertThat(result.runningTotal()).isEqualByComparingTo("120.00");
+    }
+
+    @Test
+    void findByIdListaSubCuentasEnSplitsAccounts()
+    {
+        var hamburguesa = priced(new BigDecimal("55.00"), 1, OrderItemStatus.DELIVERED);
+        var gaseosa = priced(new BigDecimal("12.00"), 1, OrderItemStatus.DELIVERED);
+        attachItems(hamburguesa, gaseosa);
+        stubDishName();
+
+        accountService.split(ACCOUNT_ID, new SplitAccountDTO(
+                com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM, null,
+                List.of(new SplitLineDTO(hamburguesa.getOrderItemId(), 1L),
+                        new SplitLineDTO(gaseosa.getOrderItemId(), 2L))));
+
+        var result = accountService.findById(ACCOUNT_ID);
+
+        assertThat(result.splits().count()).isEqualTo(2);
+        assertThat(result.splits().accounts()).hasSize(2);
+        assertThat(result.splits().accounts().get(0).label()).isEqualTo("Parte 1");
+        assertThat(result.splits().accounts().get(1).label()).isEqualTo("Parte 2");
+        assertThat(result.splits().accounts().get(0).items()).hasSize(1);
+        assertThat(result.splits().accounts().get(1).items()).hasSize(1);
+        assertThat(result.splits().totalAmount()).isEqualByComparingTo("67.00");
     }
 
     // --- Cancelar cuenta -----------------------------------------------------
@@ -464,8 +571,24 @@ class TableAccountServiceTest
         ticket.setAccount(account);
         ticket.setWaiterId(WAITER_ID);
         ticket.setSubmittedAt(LocalDateTime.now());
-        ticket.setOrderItems(List.of(items));
+        long id = 1L;
+        for (var item : items)
+        {
+            if (item.getOrderItemId() == null)
+                item.setOrderItemId(id++);
+            item.setTicket(ticket);
+        }
+        ticket.setOrderItems(new ArrayList<>(List.of(items)));
         account.setOrderTickets(new ArrayList<>(List.of(ticket)));
+    }
+
+    private void stubDishName()
+    {
+        when(menuService.dishDetail(any())).thenReturn(
+                new com.cunoc.restaurant.menu.dto.DishDetailView(
+                        1L, 1L, "Fuertes", "Hamburguesa", null, new BigDecimal("55.00"),
+                        null, 15, true, true, new BigDecimal("12.00"), new BigDecimal("78.00"), true, null));
+        when(modifierRepository.findByOrderItemOrderItemId(any())).thenReturn(List.of());
     }
 
     private static OrderItem priced(BigDecimal unitPrice, int quantity, OrderItemStatus status)

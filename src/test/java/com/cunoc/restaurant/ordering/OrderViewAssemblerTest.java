@@ -99,8 +99,25 @@ class OrderViewAssemblerTest
     }
 
     @Test
-    void toItemDejaOverdueEnFalse()
+    void toItemRecienEnviadoNoEstaOverdue()
     {
+        assertThat(views.toItem(item).overdue()).isFalse();
+    }
+
+    @Test
+    void toItemVencidoCuandoPasoPrepMasGracia()
+    {
+        item.setSubmittedAt(LocalDateTime.now().minusMinutes(30));
+
+        assertThat(views.toItem(item).overdue()).isTrue();
+    }
+
+    @Test
+    void toItemEntregadoNuncaEstaOverdue()
+    {
+        item.setStatus(OrderItemStatus.DELIVERED);
+        item.setSubmittedAt(LocalDateTime.now().minusMinutes(30));
+
         assertThat(views.toItem(item).overdue()).isFalse();
     }
 
@@ -135,6 +152,8 @@ class OrderViewAssemblerTest
 
         assertThat(view.runningTotal()).isEqualByComparingTo("120.00");
         assertThat(view.splits().totalAmount()).isEqualByComparingTo("30.00");
+        assertThat(view.splits().accounts()).hasSize(1);
+        assertThat(view.splits().accounts().get(0).items()).isEmpty();
     }
 
     @Test
@@ -156,6 +175,30 @@ class OrderViewAssemblerTest
         account.setOrderTickets(List.of(ticket));
 
         assertThat(views.toAccount(account).runningTotal()).isEqualByComparingTo("55.00");
+    }
+
+    @Test
+    void toAccountEcoaLosItemsAsignadosEnLasSubCuentas()
+    {
+        var split = new AccountSplit();
+        split.setAccountSplitId(50L);
+        split.setLabel("Parte 1");
+        split.setShareAmount(new BigDecimal("55.00"));
+        item.setSplit(split);
+
+        var account = account();
+        var ticket = new OrderTicket();
+        ticket.setAccount(account);
+        ticket.setOrderItems(List.of(item));
+        account.setOrderTickets(List.of(ticket));
+        account.setAccountSplits(List.of(split));
+
+        var view = views.toAccount(account);
+
+        assertThat(view.splits().accounts()).hasSize(1);
+        assertThat(view.splits().accounts().get(0).label()).isEqualTo("Parte 1");
+        assertThat(view.splits().accounts().get(0).items()).hasSize(1);
+        assertThat(view.splits().accounts().get(0).items().get(0).orderItemId()).isEqualTo(ITEM_ID);
     }
 
     @Test

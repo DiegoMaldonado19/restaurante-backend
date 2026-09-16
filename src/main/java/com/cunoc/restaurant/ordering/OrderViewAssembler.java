@@ -4,6 +4,7 @@ import com.cunoc.restaurant.iam.AppUserService;
 import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.menu.ModifierService;
 import com.cunoc.restaurant.menu.dto.ModifierView;
+import com.cunoc.restaurant.ordering.dto.AccountSplitView;
 import com.cunoc.restaurant.ordering.dto.DishModifierView;
 import com.cunoc.restaurant.ordering.dto.OrderItemView;
 import com.cunoc.restaurant.ordering.dto.OrderTicketView;
@@ -15,17 +16,20 @@ import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import com.cunoc.restaurant.ordering.model.OrderTicket;
 import com.cunoc.restaurant.ordering.model.TableAccount;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Arma las vistas de ordering resolviendo lo que las entidades no pueden leer:
  * el nombre del platillo y de los modificadores (menu) y el del mesero (iam).
- * overdue se deja en false: lo calcula la fase 4.
+ * overdue = submitted_at + prep_minutes + gracia, solo en cola.
  */
 @Component
 @RequiredArgsConstructor
@@ -36,14 +40,17 @@ class OrderViewAssembler
     private final AppUserService               appUserService;
     private final OrderItemModifierRepository  modifierRepository;
 
+    @Value("${restaurant.order.overdue-grace-minutes:5}")
+    private int overdueGraceMinutes = 5;
+
     OrderItemView toItem(OrderItem item)
     {
-        var dishName = menuService.dishDetail(item.getDishId()).name();
+        var dish = menuService.dishDetail(item.getDishId());
 
         return new OrderItemView(
                 item.getOrderItemId(),
                 item.getDishId(),
-                dishName,
+                dish.name(),
                 modifiersOf(item),
                 item.getComboId(),
                 item.getQuantity(),
@@ -54,7 +61,7 @@ class OrderViewAssembler
                 item.getSubmittedAt(),
                 item.getReadyAt(),
                 item.getDeliveredAt(),
-                false,
+                isOverdue(item, dish.prepMinutes()),
                 item.getSplit() != null ? item.getSplit().getCreatedAt() : null);
     }
 
@@ -83,6 +90,10 @@ class OrderViewAssembler
                 .map(split -> split.getShareAmount() == null ? BigDecimal.ZERO : split.getShareAmount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        var splitViews = splits.stream()
+                .map(split -> toSplit(split, itemsAssignedTo(account, split)))
+                .toList();
+
         return new TableAccountView(
                 account.getTableAccountId(),
                 account.getRestaurantTableId(),
@@ -90,11 +101,23 @@ class OrderViewAssembler
                 account.getStatus(),
                 account.getOpenedAt(),
                 account.getClosedAt(),
-                new TableAccountView.SplitsInfo(splits.size(), splitTotal),
+                new TableAccountView.SplitsInfo(splits.size(), splitTotal, splitViews),
                 tickets.stream().map(this::toTicket).toList(),
                 vigentesTotal(account),
                 account.getWaiterId(),
                 appUserService.findById(account.getWaiterId()).fullName());
+    }
+
+    AccountSplitView toSplit(AccountSplit split, List<OrderItem> items)
+    {
+        var assigned = items == null ? List.<OrderItem>of() : items;
+        return new AccountSplitView(
+                split.getAccountSplitId(),
+                split.getLabel(),
+                split.getMode(),
+                split.getShareAmount(),
+                split.getCreatedAt(),
+                assigned.stream().map(this::toItem).toList());
     }
 
     Page<TableAccountView> toAccountPage(Page<TableAccount> page)
@@ -109,27 +132,65 @@ class OrderViewAssembler
      */
     BigDecimal vigentesTotal(TableAccount account)
     {
-        var tickets = account.getOrderTickets() == null ? List.<OrderTicket>of() : account.getOrderTickets();
-        var total = BigDecimal.ZERO;
+        return vigentesTotal(itemsOf(account));
+    }
 
-        for (var ticket : tickets)
+    BigDecimal vigentesTotal(List<OrderItem> items)
+    {
+        var total = BigDecimal.ZERO;
+        if (items == null)
+            return total.setScale(2, RoundingMode.HALF_UP);
+
+        for (var line : items)
         {
-            var items = ticket.getOrderItems() == null ? List.<OrderItem>of() : ticket.getOrderItems();
-            for (var line : items)
-            {
-                if (!esVigente(line) || line.getUnitPrice() == null)
-                    continue;
-                total = total.add(line.getUnitPrice().multiply(BigDecimal.valueOf(line.getQuantity())));
-            }
+            if (!esVigente(line) || line.getUnitPrice() == null)
+                continue;
+            total = total.add(line.getUnitPrice().multiply(BigDecimal.valueOf(line.getQuantity())));
         }
 
         return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    List<OrderItem> itemsOf(TableAccount account)
+    {
+        var tickets = account.getOrderTickets() == null ? List.<OrderTicket>of() : account.getOrderTickets();
+        var result = new ArrayList<OrderItem>();
+        for (var ticket : tickets)
+        {
+            if (ticket.getOrderItems() != null)
+                result.addAll(ticket.getOrderItems());
+        }
+        return result;
+    }
+
+    List<OrderItem> itemsAssignedTo(TableAccount account, AccountSplit split)
+    {
+        if (account == null || split == null || split.getAccountSplitId() == null)
+            return List.of();
+
+        return itemsOf(account).stream()
+                .filter(item -> item.getSplit() != null
+                        && split.getAccountSplitId().equals(item.getSplit().getAccountSplitId()))
+                .toList();
     }
 
     static boolean esVigente(OrderItem item)
     {
         return item.getStatus() != OrderItemStatus.CANCELLED
                 && item.getStatus() != OrderItemStatus.UNAVAILABLE;
+    }
+
+    boolean isOverdue(OrderItem item, int prepMinutes)
+    {
+        if (item.getStatus() != OrderItemStatus.RECEIVED
+                && item.getStatus() != OrderItemStatus.IN_PREPARATION
+                && item.getStatus() != OrderItemStatus.READY)
+            return false;
+        if (item.getSubmittedAt() == null)
+            return false;
+
+        var due = item.getSubmittedAt().plusMinutes(prepMinutes).plusMinutes(overdueGraceMinutes);
+        return due.isBefore(LocalDateTime.now());
     }
 
     private List<DishModifierView> modifiersOf(OrderItem item)

@@ -19,6 +19,9 @@ import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -34,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -366,5 +370,39 @@ class OrderServiceTest
                 .isInstanceOf(BusinessException.class)
                 .extracting(ex -> ((BusinessException) ex).getErrorCode())
                 .isEqualTo(ErrorCode.ORDER_ITEM_ALREADY_CANCELLED);
+    }
+
+    @Test
+    void searchQueueConOverdueTrueSoloDevuelveVencidos()
+    {
+        item.setSubmittedAt(LocalDateTime.now().minusMinutes(30));
+
+        var fresco = new OrderItem();
+        fresco.setOrderItemId(201L);
+        fresco.setDishId(DISH_ID);
+        fresco.setQuantity(1);
+        fresco.setUnitPrice(new BigDecimal("25.00"));
+        fresco.setUnitCost(new BigDecimal("10.00"));
+        fresco.setStatus(OrderItemStatus.RECEIVED);
+        fresco.setSubmittedAt(LocalDateTime.now());
+
+        var entregado = new OrderItem();
+        entregado.setOrderItemId(202L);
+        entregado.setDishId(DISH_ID);
+        entregado.setQuantity(1);
+        entregado.setUnitPrice(new BigDecimal("25.00"));
+        entregado.setUnitCost(new BigDecimal("10.00"));
+        entregado.setStatus(OrderItemStatus.DELIVERED);
+        entregado.setSubmittedAt(LocalDateTime.now().minusMinutes(30));
+
+        when(itemRepository.searchQueue(isNull(), isNull(), isNull(), eq(Pageable.unpaged())))
+                .thenReturn(new PageImpl<>(List.of(item, fresco, entregado)));
+
+        var page = orderService.searchQueue(null, null, null, true, PageRequest.of(0, 5));
+
+        assertThat(page.getTotalElements()).isEqualTo(1);
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(page.getContent().get(0).orderItemId()).isEqualTo(ITEM_ID);
+        assertThat(page.getContent().get(0).overdue()).isTrue();
     }
 }

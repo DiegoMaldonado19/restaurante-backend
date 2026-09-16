@@ -19,5 +19,5 @@ public record TableAccountView(
         Long waiterId,
         String waiterName)
 {
-    public record SplitsInfo(int count, BigDecimal totalAmount) {}
+    public record SplitsInfo(int count, BigDecimal totalAmount, List<AccountSplitView> accounts) {}
 }

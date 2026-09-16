@@ -96,7 +96,7 @@ class DiningServiceTest
     private TableAccountView accountView(Long accountId)
     {
         return new TableAccountView(accountId, TABLE_ID, 2, AccountStatus.OPEN, LocalDateTime.now(), null,
-                new TableAccountView.SplitsInfo(0, BigDecimal.ZERO), List.of(), BigDecimal.ZERO, 3L, "Waiter#3");
+                new TableAccountView.SplitsInfo(0, BigDecimal.ZERO, List.of()), List.of(), BigDecimal.ZERO, 3L, "Waiter#3");
     }
 
     // --- Crear reserva ---------------------------------------------------

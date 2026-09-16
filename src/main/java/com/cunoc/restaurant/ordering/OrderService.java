@@ -20,6 +20,7 @@ import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -275,23 +276,20 @@ public class OrderService
     public Page<OrderItemView> searchQueue(com.cunoc.restaurant.ordering.model.OrderItemStatus status, Long tableId,
                                            Long waiterId, Boolean overdue, Pageable pageable)
     {
-        return itemRepository.searchQueue(status, tableId, waiterId, pageable)
-                .map(item ->
-                {
-                    var view = views.toItem(item);
-                    // Calcular overdue dinámicamente
-                    if (overdue != null && overdue)
-                    {
-                        boolean isOverdue = calculateOverdue(item);
-                        return new OrderItemView(
-                                view.orderItemId(), view.dishId(), view.dishName(),
-                                view.modifiers(), view.comboId(), view.quantity(),
-                                view.unitPrice(), view.unitCost(), view.note(),
-                                view.status(), view.submittedAt(), view.readyAt(),
-                                view.deliveredAt(), isOverdue, view.accountSplitCreatedAt());
-                    }
-                    return view;
-                });
+        if (overdue != null && overdue)
+        {
+            var vencidos = itemRepository.searchQueue(status, tableId, waiterId, Pageable.unpaged())
+                    .stream()
+                    .map(views::toItem)
+                    .filter(OrderItemView::overdue)
+                    .toList();
+            int start = (int) pageable.getOffset();
+            int end = Math.min(start + pageable.getPageSize(), vencidos.size());
+            var slice = start >= vencidos.size() ? List.<OrderItemView>of() : vencidos.subList(start, end);
+            return new PageImpl<>(slice, pageable, vencidos.size());
+        }
+
+        return itemRepository.searchQueue(status, tableId, waiterId, pageable).map(views::toItem);
     }
 
     /**
@@ -307,13 +305,6 @@ public class OrderService
     }
 
     // --- Métodos auxiliares -------------------------------------------------
-
-    private boolean calculateOverdue(OrderItem item)
-    {
-        // El cálculo real de overdue requiere prepMinutes del dish, que viene de menu (B2).
-        // Por ahora retornamos false; se implementará cuando B2 esté disponible.
-        return false;
-    }
 
     /** El precio se congela en la comanda: cambiarlo en el menu no altera ventas pasadas. */
     private BigDecimal dishSalePrice(Long dishId)
