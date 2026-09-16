@@ -138,7 +138,7 @@ class BillingServiceTest
                 List.of(items), OrderItemStatus.DELIVERED);
 
         return new TableAccountView(ACCOUNT_ID, 5L, 4, null, LocalDateTime.now(), null,
-                new TableAccountView.SplitsInfo(0, BigDecimal.ZERO), List.of(ticket),
+                new TableAccountView.SplitsInfo(0, BigDecimal.ZERO, List.of()), List.of(ticket),
                 BigDecimal.ZERO, 3L, "Waiter#3");
     }
 

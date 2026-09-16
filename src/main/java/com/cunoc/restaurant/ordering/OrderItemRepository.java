@@ -29,6 +29,8 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long>
             WHERE (:status IS NULL OR i.status = :status)
               AND (:tableId IS NULL OR i.ticket.account.restaurantTableId = :tableId)
               AND (:waiterId IS NULL OR i.ticket.waiterId = :waiterId)
+              AND i.ticket.account.status IN (com.cunoc.restaurant.ordering.model.AccountStatus.OPEN,
+                                              com.cunoc.restaurant.ordering.model.AccountStatus.BILL_REQUESTED)
            ORDER BY i.submittedAt ASC
            """)
     Page<OrderItem> searchQueue(@Param("status") OrderItemStatus status,

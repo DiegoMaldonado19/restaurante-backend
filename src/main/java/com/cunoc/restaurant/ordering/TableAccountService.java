@@ -5,10 +5,13 @@ import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
 import com.cunoc.restaurant.common.security.CurrentUser;
+import com.cunoc.restaurant.inventory.InventoryService;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.ordering.model.AccountSplit;
 import com.cunoc.restaurant.ordering.model.OrderItem;
+import com.cunoc.restaurant.ordering.model.OrderItemStatus;
+import com.cunoc.restaurant.ordering.model.SplitMode;
 import com.cunoc.restaurant.ordering.model.TableAccount;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import lombok.RequiredArgsConstructor;
@@ -23,7 +26,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -38,6 +44,8 @@ public class TableAccountService
     private final OrderTicketRepository ticketRepository;
     private final OrderItemRepository itemRepository;
     private final RestaurantTableService tableService;
+    private final InventoryService inventoryService;
+    private final OrderViewAssembler views;
 
     // --- Contrato público con los controladores ----------------------------
 
@@ -46,7 +54,7 @@ public class TableAccountService
                                          Long waiterId, LocalDateTime from, LocalDateTime to,
                                          Pageable pageable)
     {
-        return TableAccountView.page(accountRepository.search(status, tableId, waiterId, from, to, pageable));
+        return views.toAccountPage(accountRepository.search(status, tableId, waiterId, from, to, pageable));
     }
 
     public TableAccountView open(OpenAccountDTO request)
@@ -96,7 +104,19 @@ public class TableAccountService
         var account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ACCOUNT_NOT_FOUND,
                         "No existe la cuenta " + accountId + "."));
-        return TableAccountView.from(account);
+        return views.toAccount(account);
+    }
+
+    /**
+     * Cuenta vigente de la mesa (OPEN o BILL_REQUESTED). El plano la usa para no
+     * confundir historial CLOSED con la cuenta viva.
+     */
+    @Transactional(readOnly = true)
+    public Optional<TableAccountView> findOpenByTable(Long tableId)
+    {
+        return accountRepository.findByRestaurantTableIdAndStatusIn(
+                        tableId, Set.of(AccountStatus.OPEN, AccountStatus.BILL_REQUESTED))
+                .map(views::toAccount);
     }
 
     public TableAccountView transfer(Long accountId, TransferAccountDTO request)
@@ -157,85 +177,135 @@ public class TableAccountService
         var account = findAccountForUpdate(accountId);
         validateAccountOpen(account);
 
-        if (request.mode() == com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON)
+        if (request.mode() == SplitMode.BY_PERSON)
+            return splitByPerson(accountId, account, request);
+
+        return splitByItem(accountId, account, request);
+    }
+
+    private List<AccountSplitView> splitByPerson(Long accountId, TableAccount account, SplitAccountDTO request)
+    {
+        if (request.personCount() == null || request.personCount() < 2 || request.personCount() > 10)
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "El número de personas para la división por persona debe estar entre 2 y 10.");
+
+        rejectIfAlreadySplit(accountId);
+
+        int n = request.personCount();
+        BigDecimal totalAmount = views.vigentesTotal(account);
+        BigDecimal shareAmount = totalAmount.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP);
+
+        List<AccountSplit> newSplits = new ArrayList<>();
+        for (int i = 1; i <= n; i++)
         {
-            if (request.personCount() == null || request.personCount() < 2 || request.personCount() > 10)
+            var split = new AccountSplit();
+            split.setAccount(account);
+            split.setMode(SplitMode.BY_PERSON);
+            split.setLabel("Persona " + i);
+            split.setShareAmount(i == n
+                    ? totalAmount.subtract(shareAmount.multiply(BigDecimal.valueOf(n - 1)))
+                    : shareAmount);
+            split.setCreatedAt(LocalDateTime.now());
+            newSplits.add(split);
+        }
+        splitRepository.saveAll(newSplits);
+        rememberSplits(account, newSplits);
+        log.info("Cuenta {} dividida en {} partes iguales. Monto por parte: {}", accountId, n, shareAmount);
+        return newSplits.stream()
+                .map(split -> views.toSplit(split, List.of()))
+                .toList();
+    }
+
+    private List<AccountSplitView> splitByItem(Long accountId, TableAccount account, SplitAccountDTO request)
+    {
+        if (request.items() == null || request.items().isEmpty())
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Se requieren líneas de ítems para la división por item.");
+
+        rejectIfAlreadySplit(accountId);
+
+        Map<Long, OrderItem> byId = new LinkedHashMap<>();
+        for (var line : views.itemsOf(account))
+        {
+            if (line.getOrderItemId() != null)
+                byId.put(line.getOrderItemId(), line);
+        }
+
+        Map<Long, AccountSplit> groups = new LinkedHashMap<>();
+        Map<Long, List<OrderItem>> assigned = new LinkedHashMap<>();
+
+        for (var line : request.items())
+        {
+            Long groupKey = line.accountSplitId();
+            if (groupKey == null || groupKey <= 0)
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                        "El número de personas para la división por persona debe estar entre 2 y 10.");
+                        "El identificador de grupo debe ser un entero positivo.");
 
-            BigDecimal totalAmount = splitRepository.findByAccountTableAccountId(accountId)
-                    .stream()
-                    .map(AccountSplit::getShareAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-            BigDecimal shareAmount = totalAmount.divide(BigDecimal.valueOf(request.personCount()), 2, RoundingMode.HALF_UP);
-
-            List<AccountSplit> newSplits = new ArrayList<>();
-            for (int i = 1; i <= request.personCount(); i++)
+            var split = groups.get(groupKey);
+            if (split == null)
             {
-                var split = new AccountSplit();
+                split = new AccountSplit();
                 split.setAccount(account);
-                split.setMode(com.cunoc.restaurant.ordering.model.SplitMode.BY_PERSON);
-                split.setLabel("Persona " + i);
-                split.setShareAmount(shareAmount);
+                split.setMode(SplitMode.BY_ITEM);
+                split.setLabel("Parte " + groupKey);
+                split.setShareAmount(BigDecimal.ZERO);
                 split.setCreatedAt(LocalDateTime.now());
-                newSplits.add(split);
+                splitRepository.save(split);
+                groups.put(groupKey, split);
+                assigned.put(groupKey, new ArrayList<>());
             }
-            splitRepository.saveAll(newSplits);
-            log.info("Cuenta {} dividida en {} partes iguales. Monto por parte: {}", accountId, request.personCount(), shareAmount);
-            return newSplits.stream().map(AccountSplitView::from).collect(Collectors.toList());
+
+            var item = byId.get(line.orderItemId());
+            if (item == null)
+                throw new NotFoundException(ErrorCode.ORDER_ITEM_NOT_FOUND,
+                        "No existe el ítem " + line.orderItemId() + " en la cuenta " + accountId + ".");
+
+            if (!OrderViewAssembler.esVigente(item))
+                throw new BusinessException(ErrorCode.SPLIT_ITEMS_MISMATCH,
+                        "El ítem " + item.getOrderItemId() + " no es entregable y no puede asignarse a una sub-cuenta.");
+
+            if (item.getSplit() != null)
+                throw new BusinessException(ErrorCode.SPLIT_ITEMS_MISMATCH,
+                        "El ítem " + item.getOrderItemId() + " ya estaba asignado a otra sub-cuenta.");
+
+            item.setSplit(split);
+            itemRepository.save(item);
+            assigned.get(groupKey).add(item);
         }
-        else // BY_ITEM
+
+        Set<Long> requested = request.items().stream()
+                .map(SplitLineDTO::orderItemId)
+                .collect(Collectors.toSet());
+        for (var item : byId.values())
         {
-            if (request.items() == null || request.items().isEmpty())
-                throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Se requieren líneas de ítems para la división por item.");
-
-            List<AccountSplit> newSplits = request.items().stream()
-                    .map(line ->
-                    {
-                        var split = new AccountSplit();
-                        split.setAccount(account);
-                        split.setMode(com.cunoc.restaurant.ordering.model.SplitMode.BY_ITEM);
-                        split.setLabel("Split#" + System.currentTimeMillis());
-                        split.setShareAmount(BigDecimal.ZERO);
-                        split.setCreatedAt(LocalDateTime.now());
-                        return split;
-                    })
-                    .collect(Collectors.toList());
-
-            splitRepository.saveAll(newSplits);
-
-            List<Long> splitIds = new ArrayList<>();
-            for (AccountSplit split : newSplits)
-            {
-                splitIds.add(split.getAccountSplitId());
-            }
-
-            for (int i = 0; i < request.items().size(); i++)
-            {
-                var line = request.items().get(i);
-                var item = itemRepository.findById(line.orderItemId())
-                        .orElseThrow(() -> new NotFoundException(ErrorCode.ORDER_ITEM_NOT_FOUND,
-                                "No existe el ítem " + line.orderItemId() + "."));
-
-                var split = splitRepository.findById(line.accountSplitId())
-                        .orElseThrow(() -> new NotFoundException(ErrorCode.ACCOUNT_NOT_FOUND,
-                                "No existe la sub-cuenta " + line.accountSplitId() + "."));
-
-                if (!splitIds.contains(line.accountSplitId()))
-                    throw new BusinessException(ErrorCode.VALIDATION_ERROR, "La sub-cuenta en la línea " + i + " no pertenece a esta división.");
-
-                if (item.getSplit() != null)
-                    throw new BusinessException(ErrorCode.SPLIT_ITEMS_MISMATCH,
-                            "El ítem " + item.getOrderItemId() + " ya estaba asignado a otra sub-cuenta.");
-
-                item.setSplit(split);
-                itemRepository.save(item);
-            }
-
-            log.info("Cuenta {} dividida en {} sub-cuentas por ítems.", accountId, newSplits.size());
-            return newSplits.stream().map(AccountSplitView::from).collect(Collectors.toList());
+            if (OrderViewAssembler.esVigente(item) && !requested.contains(item.getOrderItemId()))
+                throw new BusinessException(ErrorCode.SPLIT_ITEMS_MISMATCH,
+                        "Faltan ítems entregables por asignar en la división.");
         }
+
+        for (var entry : groups.entrySet())
+            entry.getValue().setShareAmount(views.vigentesTotal(assigned.get(entry.getKey())));
+        splitRepository.saveAll(new ArrayList<>(groups.values()));
+        rememberSplits(account, new ArrayList<>(groups.values()));
+
+        log.info("Cuenta {} dividida en {} sub-cuentas por ítems.", accountId, groups.size());
+        return groups.entrySet().stream()
+                .map(entry -> views.toSplit(entry.getValue(), assigned.get(entry.getKey())))
+                .toList();
+    }
+
+    private void rejectIfAlreadySplit(Long accountId)
+    {
+        if (!splitRepository.findByAccountTableAccountId(accountId).isEmpty())
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "La cuenta " + accountId + " ya está dividida. Deshaga las sub-cuentas primero.");
+    }
+
+    private static void rememberSplits(TableAccount account, List<AccountSplit> newSplits)
+    {
+        if (account.getAccountSplits() == null)
+            account.setAccountSplits(new ArrayList<>());
+        account.getAccountSplits().addAll(newSplits);
     }
 
     public void deleteSplit(Long splitId)
@@ -296,6 +366,8 @@ public class TableAccountService
             throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
                     "Solo se pueden anular cuentas abiertas o listas para cobro. Estado actual: " + account.getStatus() + ".");
 
+        cancelLiveItems(account, request.reason());
+
         account.setStatus(AccountStatus.CANCELLED);
         account.setCancellationReason(request.reason());
         account.setClosedAt(LocalDateTime.now());
@@ -339,5 +411,35 @@ public class TableAccountService
         if (account.getStatus() != AccountStatus.OPEN)
             throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
                     "La cuenta " + account.getTableAccountId() + " no está abierta. Estado actual: " + account.getStatus() + ".");
+    }
+
+    /**
+     * Al anular la cuenta, los ítems vivos dejan de ser cola de cocina (D7).
+     * RECEIVED devuelve stock; IN_PREPARATION/READY no: el insumo ya se gastó.
+     */
+    private void cancelLiveItems(TableAccount account, String reason)
+    {
+        var userId = CurrentUser.id();
+        for (var item : views.itemsOf(account))
+        {
+            if (item.getStatus() == OrderItemStatus.RECEIVED)
+            {
+                inventoryService.reverseSaleConsumption(item.getOrderItemId(), userId);
+                markItemCancelled(item, reason, userId);
+            }
+            else if (item.getStatus() == OrderItemStatus.IN_PREPARATION
+                    || item.getStatus() == OrderItemStatus.READY)
+            {
+                markItemCancelled(item, reason, userId);
+            }
+        }
+    }
+
+    private void markItemCancelled(OrderItem item, String reason, Long userId)
+    {
+        item.setStatus(OrderItemStatus.CANCELLED);
+        item.setCancelledBy(userId);
+        item.setCancellationReason(reason);
+        itemRepository.save(item);
     }
 }

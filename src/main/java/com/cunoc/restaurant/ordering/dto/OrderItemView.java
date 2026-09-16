@@ -1,6 +1,5 @@
 package com.cunoc.restaurant.ordering.dto;
 
-import com.cunoc.restaurant.ordering.model.OrderItem;
 import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 
 import java.math.BigDecimal;
@@ -23,24 +22,4 @@ public record OrderItemView(
         LocalDateTime deliveredAt,
         boolean overdue,
         LocalDateTime accountSplitCreatedAt)
-{
-    public static OrderItemView from(OrderItem item)
-    {
-        return new OrderItemView(
-                item.getOrderItemId(),
-                item.getDishId(),
-                "DishNamePlaceholder",  // Se resolverá con B2 (MenuService.dishBrief)
-                List.of(),  // Se resolverán con B2 (MenuService.modifierBrief)
-                item.getComboId(),
-                item.getQuantity(),
-                item.getUnitPrice(),
-                item.getUnitCost(),
-                item.getNote(),
-                item.getStatus(),
-                item.getSubmittedAt(),
-                item.getReadyAt(),
-                item.getDeliveredAt(),
-                false,  // Se calculará dinámicamente con B2
-                item.getSplit() != null ? item.getSplit().getCreatedAt() : null);
-    }
-}
+{ }

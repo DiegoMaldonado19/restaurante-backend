@@ -108,6 +108,19 @@ public class InventoryService
         });
     }
 
+    /**
+     * Suelta la FK de stock_movement.order_item_id para poder borrar el ítem.
+     * El libro mayor no se toca: solo se anula la referencia.
+     */
+    public void detachOrderItem(Long orderItemId)
+    {
+        for (var movement : stockMovementRepository.findByOrderItemId(orderItemId))
+        {
+            movement.setOrderItemId(null);
+            stockMovementRepository.save(movement);
+        }
+    }
+
     // --- Catalogo de insumos ------------------------------------------------
 
     @Transactional(readOnly = true)

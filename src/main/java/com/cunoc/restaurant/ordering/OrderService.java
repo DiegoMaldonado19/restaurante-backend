@@ -6,8 +6,10 @@ import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
 import com.cunoc.restaurant.common.security.CurrentUser;
 import com.cunoc.restaurant.inventory.InventoryService;
+import com.cunoc.restaurant.menu.ComboService;
 import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.menu.ModifierService;
+import com.cunoc.restaurant.menu.dto.ComboItemView;
 import com.cunoc.restaurant.menu.dto.ModifierView;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
@@ -20,11 +22,13 @@ import com.cunoc.restaurant.restaurant.RestaurantTableService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -46,8 +50,10 @@ public class OrderService
     private final OrderItemModifierRepository modifierRepository;
     private final MenuService menuService;
     private final ModifierService modifierService;
+    private final ComboService comboService;
     private final InventoryService inventoryService;
     private final RestaurantTableService tableService;
+    private final OrderViewAssembler views;
 
     // --- Máquina de estados del ítem ----------------------------------------
 
@@ -96,44 +102,17 @@ public class OrderService
         // que ordenar las lineas por su insumo menor antes de recorrerlas.
         for (var line : request.items())
         {
-            var item = new OrderItem();
-            item.setTicket(ticket);
-            item.setDishId(line.dishId());
-            item.setQuantity(line.quantity());
-            item.setUnitPrice(dishSalePrice(line.dishId()));
-            item.setUnitCost(menuService.productionCost(line.dishId()));
-            item.setNote(null);
-            item.setStatus(OrderItemStatus.RECEIVED);
-            item.setSubmittedAt(LocalDateTime.now());
-
-            itemRepository.save(item);
-
-            // Guardar modificadores
-            if (line.modifierIds() != null)
-            {
-                for (var modifierId : line.modifierIds())
-                {
-                    var modifier = new OrderItemModifier();
-                    modifier.setOrderItem(item);
-                    modifier.setDishModifierId(modifierId);
-                    modifier.setExtraPrice(modifierExtraPrice(line.dishId(), modifierId));
-                    modifierRepository.save(modifier);
-                }
-            }
-
-            var consumption = menuService.explodeRecipe(List.of(
-                    new com.cunoc.restaurant.menu.dto.OrderLineDTO(
-                            line.dishId(), line.quantity(), line.modifierIds())));
-            inventoryService.registerSaleConsumption(consumption, item.getOrderItemId(), userId);
-
-            log.info("Ítem {} agregado a comanda {}. Platillo: {}, cantidad: {}",
-                    item.getOrderItemId(), ticket.getOrderTicketId(), line.dishId(), line.quantity());
+            if (line.comboId() != null)
+                submitComboLine(ticket, line, userId);
+            else
+                persistItem(ticket, line.dishId(), null, line.quantity(),
+                        dishSalePrice(line.dishId()), line.note(), line.modifierIds(), userId);
         }
 
         log.info("Comanda {} enviada para cuenta {}. Ronda: {}",
                 ticket.getOrderTicketId(), accountId, ticket.getSubmittedAt());
 
-        return OrderTicketView.from(ticket);
+        return views.toTicket(ticket);
     }
 
     // --- Ciclo de vida del ítem ---------------------------------------------
@@ -146,6 +125,7 @@ public class OrderService
     public OrderItemView updateStatus(Long orderItemId, UpdateOrderItemStatusDTO request)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
         var currentStatus = item.getStatus();
         var targetStatus = request.status();
 
@@ -175,7 +155,7 @@ public class OrderService
         itemRepository.save(item);
         log.info("Ítem {} cambiado de {} a {}", orderItemId, currentStatus, targetStatus);
 
-        return OrderItemView.from(item);
+        return views.toItem(item);
     }
 
     /**
@@ -196,7 +176,7 @@ public class OrderService
 
         log.info("Ítem {} actualizado. Nueva cantidad: {}", orderItemId, request.quantity());
 
-        return OrderItemView.from(item);
+        return views.toItem(item);
     }
 
     /**
@@ -206,13 +186,15 @@ public class OrderService
     public void delete(Long orderItemId)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
 
         if (item.getStatus() != OrderItemStatus.RECEIVED)
             throw new BusinessException(ErrorCode.ORDER_ITEM_IN_PREPARATION,
                     "Solo se pueden eliminar ítems en estado RECIBIDO. Estado actual: " + item.getStatus() + ".");
 
-        // Devolver stock al inventario
+        // Devolver stock al inventario y soltar la FK antes de borrar la fila.
         inventoryService.reverseSaleConsumption(orderItemId, CurrentUser.id());
+        inventoryService.detachOrderItem(orderItemId);
 
         // Eliminar modificadores asociados
         modifierRepository.findByOrderItemOrderItemId(orderItemId)
@@ -229,6 +211,7 @@ public class OrderService
     public void markUnavailable(Long orderItemId)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
 
         if (item.getStatus() != OrderItemStatus.RECEIVED)
             throw new BusinessException(ErrorCode.ORDER_ITEM_IN_PREPARATION,
@@ -274,23 +257,20 @@ public class OrderService
     public Page<OrderItemView> searchQueue(com.cunoc.restaurant.ordering.model.OrderItemStatus status, Long tableId,
                                            Long waiterId, Boolean overdue, Pageable pageable)
     {
-        return itemRepository.searchQueue(status, tableId, waiterId, pageable)
-                .map(item ->
-                {
-                    var view = OrderItemView.from(item);
-                    // Calcular overdue dinámicamente
-                    if (overdue != null && overdue)
-                    {
-                        boolean isOverdue = calculateOverdue(item);
-                        return new OrderItemView(
-                                view.orderItemId(), view.dishId(), view.dishName(),
-                                view.modifiers(), view.comboId(), view.quantity(),
-                                view.unitPrice(), view.unitCost(), view.note(),
-                                view.status(), view.submittedAt(), view.readyAt(),
-                                view.deliveredAt(), isOverdue, view.accountSplitCreatedAt());
-                    }
-                    return view;
-                });
+        if (overdue != null && overdue)
+        {
+            var vencidos = itemRepository.searchQueue(status, tableId, waiterId, Pageable.unpaged())
+                    .stream()
+                    .map(views::toItem)
+                    .filter(OrderItemView::overdue)
+                    .toList();
+            int start = (int) pageable.getOffset();
+            int end = Math.min(start + pageable.getPageSize(), vencidos.size());
+            var slice = start >= vencidos.size() ? List.<OrderItemView>of() : vencidos.subList(start, end);
+            return new PageImpl<>(slice, pageable, vencidos.size());
+        }
+
+        return itemRepository.searchQueue(status, tableId, waiterId, pageable).map(views::toItem);
     }
 
     /**
@@ -302,16 +282,101 @@ public class OrderService
         var ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ORDER_NOT_FOUND,
                         "No existe la comanda " + ticketId + "."));
-        return OrderTicketView.from(ticket);
+        return views.toTicket(ticket);
     }
 
     // --- Métodos auxiliares -------------------------------------------------
 
-    private boolean calculateOverdue(OrderItem item)
+    /**
+     * Un combo se expande en platillos (03 · §1.6): un order_item por componente,
+     * mismo combo_id, precio repartido en proporción al sale_price; el último tramo
+     * absorbe el centavo. explodeRecipe va por platillo, no por combo.
+     */
+    private void submitComboLine(OrderTicket ticket, OrderLineDTO line, Long userId)
     {
-        // El cálculo real de overdue requiere prepMinutes del dish, que viene de menu (B2).
-        // Por ahora retornamos false; se implementará cuando B2 esté disponible.
-        return false;
+        if (line.modifierIds() != null && !line.modifierIds().isEmpty())
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Un combo no admite modificadores; aplíquelos al platillo suelto.");
+
+        var combo = comboService.findById(line.comboId());
+        if (!combo.active())
+            throw new BusinessException(ErrorCode.DISH_UNAVAILABLE,
+                    "El combo " + line.comboId() + " no está disponible.");
+
+        var components = combo.items() == null ? List.<ComboItemView>of() : combo.items();
+        if (components.isEmpty())
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "El combo " + line.comboId() + " no tiene platillos.");
+
+        int lineQty = line.quantity();
+        var charge = combo.comboPrice().multiply(BigDecimal.valueOf(lineQty));
+        var itemsTotal = BigDecimal.ZERO;
+        var qtys = new int[components.size()];
+        var weights = new BigDecimal[components.size()];
+        for (int i = 0; i < components.size(); i++)
+        {
+            var component = components.get(i);
+            qtys[i] = component.quantity() * lineQty;
+            weights[i] = component.salePrice().multiply(BigDecimal.valueOf(qtys[i]));
+            itemsTotal = itemsTotal.add(weights[i]);
+        }
+        if (itemsTotal.compareTo(BigDecimal.ZERO) <= 0)
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "El combo " + line.comboId() + " no tiene un precio de platillos válido.");
+
+        var allocated = BigDecimal.ZERO;
+        for (int i = 0; i < components.size(); i++)
+        {
+            var component = components.get(i);
+            BigDecimal lineTotal;
+            if (i == components.size() - 1)
+                lineTotal = charge.subtract(allocated);
+            else
+            {
+                lineTotal = charge.multiply(weights[i]).divide(itemsTotal, 2, RoundingMode.HALF_UP);
+                allocated = allocated.add(lineTotal);
+            }
+            var unitPrice = lineTotal.divide(BigDecimal.valueOf(qtys[i]), 2, RoundingMode.HALF_UP);
+            persistItem(ticket, component.dishId(), combo.comboId(), qtys[i],
+                    unitPrice, line.note(), null, userId);
+        }
+    }
+
+    private void persistItem(OrderTicket ticket, Long dishId, Long comboId, int quantity,
+                             BigDecimal unitPrice, String note, List<Long> modifierIds, Long userId)
+    {
+        var item = new OrderItem();
+        item.setTicket(ticket);
+        item.setDishId(dishId);
+        item.setComboId(comboId);
+        item.setQuantity(quantity);
+        item.setUnitPrice(unitPrice);
+        item.setUnitCost(menuService.productionCost(dishId));
+        item.setNote(note);
+        item.setStatus(OrderItemStatus.RECEIVED);
+        item.setSubmittedAt(LocalDateTime.now());
+
+        itemRepository.save(item);
+        ticket.getOrderItems().add(item);
+
+        if (modifierIds != null)
+        {
+            for (var modifierId : modifierIds)
+            {
+                var modifier = new OrderItemModifier();
+                modifier.setOrderItem(item);
+                modifier.setDishModifierId(modifierId);
+                modifier.setExtraPrice(modifierExtraPrice(dishId, modifierId));
+                modifierRepository.save(modifier);
+            }
+        }
+
+        var consumption = menuService.explodeRecipe(List.of(
+                new com.cunoc.restaurant.menu.dto.OrderLineDTO(dishId, quantity, modifierIds)));
+        inventoryService.registerSaleConsumption(consumption, item.getOrderItemId(), userId);
+
+        log.info("Ítem {} agregado a comanda {}. Platillo: {}, cantidad: {}",
+                item.getOrderItemId(), ticket.getOrderTicketId(), dishId, quantity);
     }
 
     /** El precio se congela en la comanda: cambiarlo en el menu no altera ventas pasadas. */
@@ -342,5 +407,18 @@ public class OrderService
         return itemRepository.findById(orderItemId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ORDER_ITEM_NOT_FOUND,
                         "No existe el ítem " + orderItemId + "."));
+    }
+
+    private void requireLiveAccount(OrderItem item)
+    {
+        var ticket = item.getTicket();
+        var account = ticket == null ? null : ticket.getAccount();
+        if (account == null)
+            return;
+        if (account.getStatus() != AccountStatus.OPEN
+                && account.getStatus() != AccountStatus.BILL_REQUESTED)
+            throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
+                    "No se puede operar un ítem de una cuenta que no está abierta. Estado: "
+                            + account.getStatus() + ".");
     }
 }
