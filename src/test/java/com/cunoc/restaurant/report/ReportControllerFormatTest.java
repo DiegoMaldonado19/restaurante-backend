@@ -18,6 +18,9 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
@@ -91,6 +94,48 @@ class ReportControllerFormatTest
                 .andExpect(header().string("Content-Disposition",
                                            "attachment; filename=\"ventas.csv\""))
                 .andExpect(content().string(Matchers.containsString("period,invoices")));
+    }
+
+    /** El .xlsx tiene que ser un libro de verdad, no un CSV renombrado: Excel lo rechazaria. */
+    @Test
+    void conFormatXlsxDevuelveUnLibroDeExcelLegible() throws Exception
+    {
+        when(reportService.sales(any(), any(), any(), any())).thenReturn(ONE_ROW);
+
+        var response = mockMvc.perform(get("/api/v1/reports/sales")
+                        .param("from",   "2026-09-01")
+                        .param("to",     "2026-09-13")
+                        .param("format", "xlsx")
+                        .with(jwt().authorities(() -> "ROLE_ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .andExpect(header().string("Content-Disposition",
+                                           "attachment; filename=\"ventas.xlsx\""))
+                .andReturn()
+                .getResponse()
+                .getContentAsByteArray();
+
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(response)))
+        {
+            var sheet = workbook.getSheetAt(0);
+
+            assertThat(sheet.getRow(0).getCell(0).getStringCellValue()).isEqualTo("period");
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).isEqualTo("2026-09-01");
+            // Las cifras viajan como numero: quien reciba el archivo puede sumar la columna.
+            assertThat(sheet.getRow(1).getCell(3).getNumericCellValue()).isEqualTo(300.00);
+        }
+    }
+
+    @Test
+    void unFormatoDesconocidoSeRechaza() throws Exception
+    {
+        mockMvc.perform(get("/api/v1/reports/sales")
+                        .param("from",   "2026-09-01")
+                        .param("to",     "2026-09-13")
+                        .param("format", "pdf")
+                        .with(jwt().authorities(() -> "ROLE_ADMIN")))
+                .andExpect(status().isBadRequest());
     }
 
     /**

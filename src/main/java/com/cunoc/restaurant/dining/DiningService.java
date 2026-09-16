@@ -141,7 +141,7 @@ public class DiningService
             throw new BusinessException(ErrorCode.RESERVATION_NOT_DUE,
                     "La reserva " + id + " solo puede sentarse entre " + windowStart + " y " + windowEnd + ".");
 
-        tableService.transitionTo(reservation.getRestaurantTableId(), TableStatus.OCCUPIED);
+        tableService.transitionTo(reservation.getRestaurantTableId(), TableStatus.FREE);
 
         var account = tableAccountService.open(
                 new OpenAccountDTO(reservation.getRestaurantTableId(), reservation.getGuestCount()));
@@ -219,8 +219,6 @@ public class DiningService
             throw new BusinessException(ErrorCode.WAITLIST_TABLE_TOO_SMALL,
                     "La mesa " + table.restaurantTableId() + " tiene capacidad para " + table.capacity()
                             + " y el grupo es de " + entry.getGuestCount() + " personas.");
-
-        tableService.transitionTo(request.tableId(), TableStatus.OCCUPIED);
 
         var account = tableAccountService.open(new OpenAccountDTO(request.tableId(), entry.getGuestCount()));
 

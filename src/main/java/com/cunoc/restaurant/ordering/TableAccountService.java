@@ -158,9 +158,13 @@ public class TableAccountService
             throw new BusinessException(ErrorCode.ACCOUNT_MERGE_INVALID,
                     "No se puede fusionar una cuenta consigo misma.");
 
-        // Transferir tickets de origen a destino
-        sourceAccount.getOrderTickets().forEach(ticket -> ticket.setAccount(targetAccount));
-        ticketRepository.saveAll(sourceAccount.getOrderTickets());
+        // Transferir tickets de origen a destino, moviendolos tambien en memoria: sin esto
+        // findById() responde con la coleccion vieja y la cuenta fusionada sale sin su total.
+        var movidos = new ArrayList<>(sourceAccount.getOrderTickets());
+        movidos.forEach(ticket -> ticket.setAccount(targetAccount));
+        ticketRepository.saveAll(movidos);
+        sourceAccount.getOrderTickets().clear();
+        targetAccount.getOrderTickets().addAll(movidos);
 
         sourceAccount.setStatus(AccountStatus.MERGED);
         sourceAccount.setMergedInto(targetAccount);

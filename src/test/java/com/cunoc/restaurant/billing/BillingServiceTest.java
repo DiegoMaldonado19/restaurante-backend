@@ -184,7 +184,7 @@ class BillingServiceTest
 
         var facturaExistente = new Invoice();
         facturaExistente.setInvoiceNumber(99L);
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.of(facturaExistente));
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of(facturaExistente));
 
         var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(61.60))), null, null, null);
 
@@ -202,7 +202,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         // Subtotal 110 + 12% impuesto = 123.20, pero se paga solo 100.
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
 
         var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(100))), null, null, null);
 
@@ -220,7 +220,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         // Dos platillos a Q55 c/u = Q110 de subtotal, +12% impuesto = Q123.20
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
 
         var request = new IssueInvoiceDTO(null, List.of(new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(123.20))), null, null, null);
 
@@ -247,7 +247,7 @@ class BillingServiceTest
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         // Total 123.20: Q73.20 en efectivo + Q50.00 con tarjeta
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(55), 2)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
 
         var request = new IssueInvoiceDTO(null, List.of(
                 new PaymentDTO(PaymentMethod.CASH, BigDecimal.valueOf(73.20)),
@@ -274,7 +274,7 @@ class BillingServiceTest
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
         when(customerService.availablePoints(7L)).thenReturn(50, 60); // antes de acreditar, despues de acreditar
 
         // Subtotal 100 + 12% = 112.00, menos 20 puntos x Q0.10 = Q2.00 de descuento.
@@ -300,7 +300,7 @@ class BillingServiceTest
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
         when(customerService.availablePoints(7L)).thenReturn(0, 0);
 
         // 100 + 12% = 112.00; 50 puntos x Q0.10 = Q5.00 => se pagan Q107.00
@@ -323,7 +323,7 @@ class BillingServiceTest
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.TEN, 1)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
         when(customerService.availablePoints(7L)).thenReturn(0, 0);
 
         // 10 + 12% = 11.20, pero se redimen 5000 puntos = Q500: el descuento se topa al bruto.
@@ -346,7 +346,7 @@ class BillingServiceTest
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
 
         // 100 + 12% = 112.00 + Q15 de propina = Q127.00
         var request = new IssueInvoiceDTO(null,
@@ -376,7 +376,7 @@ class BillingServiceTest
     {
         when(cashShiftService.requireOpenShift(CASHIER_ID)).thenReturn(shift);
         when(tableAccountService.findById(ACCOUNT_ID)).thenReturn(accountWith(deliveredItem(BigDecimal.valueOf(100), 1)));
-        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        when(invoiceRepository.findByTableAccountId(ACCOUNT_ID)).thenReturn(List.of());
 
         // Total 122.00 (100 + 12 de impuesto + 10 de propina) en dos pagos de 61.00
         var request = new IssueInvoiceDTO(null, List.of(

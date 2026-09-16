@@ -10,6 +10,7 @@ import com.cunoc.restaurant.menu.ComboService;
 import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.menu.ModifierService;
 import com.cunoc.restaurant.menu.dto.ComboItemView;
+import com.cunoc.restaurant.menu.dto.DishDetailView;
 import com.cunoc.restaurant.menu.dto.ModifierView;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
@@ -30,9 +31,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Servicio de comandas: enviar rondas, ciclo de vida de ítems, cola de cocina.
@@ -105,8 +108,11 @@ public class OrderService
             if (line.comboId() != null)
                 submitComboLine(ticket, line, userId);
             else
-                persistItem(ticket, line.dishId(), null, line.quantity(),
-                        dishSalePrice(line.dishId()), line.note(), line.modifierIds(), userId);
+            {
+                var dish = availableDish(line.dishId());
+                persistItem(ticket, dish.dishId(), null, line.quantity(),
+                        dish.salePrice(), line.note(), line.modifierIds(), userId);
+            }
         }
 
         log.info("Comanda {} enviada para cuenta {}. Ronda: {}",
@@ -234,6 +240,7 @@ public class OrderService
     public void cancel(Long orderItemId, CancelOrderItemDTO request)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
 
         if (item.getStatus() == OrderItemStatus.CANCELLED)
             throw new BusinessException(ErrorCode.ORDER_ITEM_ALREADY_CANCELLED,
@@ -308,6 +315,9 @@ public class OrderService
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "El combo " + line.comboId() + " no tiene platillos.");
 
+        // Un combo no puede colar un platillo que el menu marca como no disponible.
+        components.forEach(component -> availableDish(component.dishId()));
+
         int lineQty = line.quantity();
         var charge = combo.comboPrice().multiply(BigDecimal.valueOf(lineQty));
         var itemsTotal = BigDecimal.ZERO;
@@ -345,12 +355,15 @@ public class OrderService
     private void persistItem(OrderTicket ticket, Long dishId, Long comboId, int quantity,
                              BigDecimal unitPrice, String note, List<Long> modifierIds, Long userId)
     {
+        var extraPrices = modifierExtraPrices(dishId, modifierIds);
+
         var item = new OrderItem();
         item.setTicket(ticket);
         item.setDishId(dishId);
         item.setComboId(comboId);
         item.setQuantity(quantity);
-        item.setUnitPrice(unitPrice);
+        item.setUnitPrice(unitPrice.add(extraPrices.values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add)));
         item.setUnitCost(menuService.productionCost(dishId));
         item.setNote(note);
         item.setStatus(OrderItemStatus.RECEIVED);
@@ -359,17 +372,14 @@ public class OrderService
         itemRepository.save(item);
         ticket.getOrderItems().add(item);
 
-        if (modifierIds != null)
+        extraPrices.forEach((modifierId, extraPrice) ->
         {
-            for (var modifierId : modifierIds)
-            {
-                var modifier = new OrderItemModifier();
-                modifier.setOrderItem(item);
-                modifier.setDishModifierId(modifierId);
-                modifier.setExtraPrice(modifierExtraPrice(dishId, modifierId));
-                modifierRepository.save(modifier);
-            }
-        }
+            var modifier = new OrderItemModifier();
+            modifier.setOrderItem(item);
+            modifier.setDishModifierId(modifierId);
+            modifier.setExtraPrice(extraPrice);
+            modifierRepository.save(modifier);
+        });
 
         var consumption = menuService.explodeRecipe(List.of(
                 new com.cunoc.restaurant.menu.dto.OrderLineDTO(dishId, quantity, modifierIds)));
@@ -379,20 +389,42 @@ public class OrderService
                 item.getOrderItemId(), ticket.getOrderTicketId(), dishId, quantity);
     }
 
-    /** El precio se congela en la comanda: cambiarlo en el menu no altera ventas pasadas. */
-    private BigDecimal dishSalePrice(Long dishId)
+    /**
+     * Guarda la disponibilidad manual antes de comandar. La falta de stock la detecta
+     * inventory con INSUFFICIENT_STOCK, que nombra el insumo y es mas util.
+     * El precio se congela aqui: cambiarlo en el menu no altera ventas pasadas.
+     */
+    private DishDetailView availableDish(Long dishId)
     {
-        return menuService.dishDetail(dishId).salePrice();
+        var dish = menuService.dishDetail(dishId);
+
+        if (!dish.manualAvailable())
+            throw new BusinessException(ErrorCode.DISH_UNAVAILABLE,
+                    "El platillo " + dish.name() + " no está disponible.");
+
+        return dish;
     }
 
-    private BigDecimal modifierExtraPrice(Long dishId, Long modifierId)
+    /** El sobreprecio se congela dentro del unit_price del item, para que lo cobren precuenta, total corriente y factura. */
+    private Map<Long, BigDecimal> modifierExtraPrices(Long dishId, List<Long> modifierIds)
     {
-        return modifierService.findByDish(dishId).stream()
-                .filter(modifier -> modifier.dishModifierId().equals(modifierId))
-                .findFirst()
-                .map(ModifierView::extraPrice)
-                .orElseThrow(() -> new NotFoundException(ErrorCode.MODIFIER_NOT_FOUND,
-                        "El modificador " + modifierId + " no pertenece al platillo " + dishId + "."));
+        if (modifierIds == null || modifierIds.isEmpty())
+            return Map.of();
+
+        var available = modifierService.findByDish(dishId).stream()
+                .collect(Collectors.toMap(ModifierView::dishModifierId, ModifierView::extraPrice));
+
+        var result = new LinkedHashMap<Long, BigDecimal>();
+        for (var modifierId : modifierIds)
+        {
+            var extraPrice = available.get(modifierId);
+            if (extraPrice == null)
+                throw new NotFoundException(ErrorCode.MODIFIER_NOT_FOUND,
+                        "El modificador " + modifierId + " no pertenece al platillo " + dishId + ".");
+            result.put(modifierId, extraPrice);
+        }
+
+        return result;
     }
     @Transactional()
     private TableAccount accountForUpdate(Long accountId)
