@@ -5,10 +5,12 @@ import com.cunoc.restaurant.common.exception.BusinessException;
 import com.cunoc.restaurant.common.exception.ErrorCode;
 import com.cunoc.restaurant.common.exception.NotFoundException;
 import com.cunoc.restaurant.common.security.CurrentUser;
+import com.cunoc.restaurant.inventory.InventoryService;
 import com.cunoc.restaurant.ordering.dto.*;
 import com.cunoc.restaurant.ordering.model.AccountStatus;
 import com.cunoc.restaurant.ordering.model.AccountSplit;
 import com.cunoc.restaurant.ordering.model.OrderItem;
+import com.cunoc.restaurant.ordering.model.OrderItemStatus;
 import com.cunoc.restaurant.ordering.model.SplitMode;
 import com.cunoc.restaurant.ordering.model.TableAccount;
 import com.cunoc.restaurant.restaurant.RestaurantTableService;
@@ -42,6 +44,7 @@ public class TableAccountService
     private final OrderTicketRepository ticketRepository;
     private final OrderItemRepository itemRepository;
     private final RestaurantTableService tableService;
+    private final InventoryService inventoryService;
     private final OrderViewAssembler views;
 
     // --- Contrato público con los controladores ----------------------------
@@ -363,6 +366,8 @@ public class TableAccountService
             throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
                     "Solo se pueden anular cuentas abiertas o listas para cobro. Estado actual: " + account.getStatus() + ".");
 
+        cancelLiveItems(account, request.reason());
+
         account.setStatus(AccountStatus.CANCELLED);
         account.setCancellationReason(request.reason());
         account.setClosedAt(LocalDateTime.now());
@@ -406,5 +411,35 @@ public class TableAccountService
         if (account.getStatus() != AccountStatus.OPEN)
             throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
                     "La cuenta " + account.getTableAccountId() + " no está abierta. Estado actual: " + account.getStatus() + ".");
+    }
+
+    /**
+     * Al anular la cuenta, los ítems vivos dejan de ser cola de cocina (D7).
+     * RECEIVED devuelve stock; IN_PREPARATION/READY no: el insumo ya se gastó.
+     */
+    private void cancelLiveItems(TableAccount account, String reason)
+    {
+        var userId = CurrentUser.id();
+        for (var item : views.itemsOf(account))
+        {
+            if (item.getStatus() == OrderItemStatus.RECEIVED)
+            {
+                inventoryService.reverseSaleConsumption(item.getOrderItemId(), userId);
+                markItemCancelled(item, reason, userId);
+            }
+            else if (item.getStatus() == OrderItemStatus.IN_PREPARATION
+                    || item.getStatus() == OrderItemStatus.READY)
+            {
+                markItemCancelled(item, reason, userId);
+            }
+        }
+    }
+
+    private void markItemCancelled(OrderItem item, String reason, Long userId)
+    {
+        item.setStatus(OrderItemStatus.CANCELLED);
+        item.setCancelledBy(userId);
+        item.setCancellationReason(reason);
+        itemRepository.save(item);
     }
 }

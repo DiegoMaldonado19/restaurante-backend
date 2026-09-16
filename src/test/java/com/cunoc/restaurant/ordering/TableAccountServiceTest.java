@@ -8,6 +8,7 @@ import com.cunoc.restaurant.iam.AppUserService;
 import com.cunoc.restaurant.iam.dto.UserView;
 import com.cunoc.restaurant.iam.model.UserRole;
 import com.cunoc.restaurant.iam.model.UserStatus;
+import com.cunoc.restaurant.inventory.InventoryService;
 import com.cunoc.restaurant.menu.MenuService;
 import com.cunoc.restaurant.menu.ModifierService;
 import com.cunoc.restaurant.ordering.dto.*;
@@ -36,9 +37,13 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -57,6 +62,7 @@ class TableAccountServiceTest
     private final OrderTicketRepository ticketRepository = mock(OrderTicketRepository.class);
     private final OrderItemRepository itemRepository = mock(OrderItemRepository.class);
     private final RestaurantTableService tableService = mock(RestaurantTableService.class);
+    private final InventoryService inventoryService = mock(InventoryService.class);
     private final MenuService menuService = mock(MenuService.class);
     private final ModifierService modifierService = mock(ModifierService.class);
     private final AppUserService appUserService = mock(AppUserService.class);
@@ -66,7 +72,7 @@ class TableAccountServiceTest
 
     private final TableAccountService accountService =
             new TableAccountService(accountRepository, splitRepository, ticketRepository, itemRepository,
-                    tableService, views);
+                    tableService, inventoryService, views);
 
     private TableAccount account;
 
@@ -587,6 +593,31 @@ class TableAccountServiceTest
 
         assertThat(result.status()).isEqualTo(AccountStatus.CANCELLED);
         assertThat(result.waiterName()).isEqualTo("Luis Gomez");
+    }
+
+    @Test
+    void cancelCuentaAbiertaAnulaItemsVivosYDevuelveStockSoloDeRecibidos()
+    {
+        stubDishName();
+        var recibido = priced(new BigDecimal("55.00"), 1, OrderItemStatus.RECEIVED);
+        var enPrep = priced(new BigDecimal("12.00"), 1, OrderItemStatus.IN_PREPARATION);
+        var listo = priced(new BigDecimal("15.00"), 1, OrderItemStatus.READY);
+        var entregado = priced(new BigDecimal("25.00"), 1, OrderItemStatus.DELIVERED);
+        var noDisp = priced(new BigDecimal("8.00"), 1, OrderItemStatus.UNAVAILABLE);
+        attachItems(recibido, enPrep, listo, entregado, noDisp);
+
+        accountService.cancel(ACCOUNT_ID, new CancelAccountDTO("Cliente se fue"));
+
+        assertThat(recibido.getStatus()).isEqualTo(OrderItemStatus.CANCELLED);
+        assertThat(enPrep.getStatus()).isEqualTo(OrderItemStatus.CANCELLED);
+        assertThat(listo.getStatus()).isEqualTo(OrderItemStatus.CANCELLED);
+        assertThat(entregado.getStatus()).isEqualTo(OrderItemStatus.DELIVERED);
+        assertThat(noDisp.getStatus()).isEqualTo(OrderItemStatus.UNAVAILABLE);
+        assertThat(recibido.getCancellationReason()).isEqualTo("Cliente se fue");
+        assertThat(recibido.getCancelledBy()).isEqualTo(WAITER_ID);
+        verify(inventoryService).reverseSaleConsumption(eq(recibido.getOrderItemId()), eq(WAITER_ID));
+        verify(inventoryService, never()).reverseSaleConsumption(eq(enPrep.getOrderItemId()), anyLong());
+        verify(inventoryService, never()).reverseSaleConsumption(eq(listo.getOrderItemId()), anyLong());
     }
 
     private void attachItems(OrderItem... items)

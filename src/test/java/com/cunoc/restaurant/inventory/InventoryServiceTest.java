@@ -135,6 +135,24 @@ class InventoryServiceTest
     }
 
     @Test
+    void detachOrderItemNulaLaReferenciaDelMovimiento()
+    {
+        inventoryService.registerEntry(entryOf("1000.000", "0.12"), USER_ID);
+        inventoryService.registerSaleConsumption(
+                List.of(new SupplyConsumption(SUPPLY_ID, new BigDecimal("300.000"))), 42L, USER_ID);
+
+        when(stockMovementRepository.findByOrderItemId(42L)).thenAnswer(inv -> movementsOf(42L));
+
+        inventoryService.detachOrderItem(42L);
+
+        assertThat(ledger).anySatisfy(movement ->
+        {
+            assertThat(movement.getQuantity()).isEqualByComparingTo("-300.000");
+            assertThat(movement.getOrderItemId()).isNull();
+        });
+    }
+
+    @Test
     void elInsumoInactivoNoTieneSaldoDisponible()
     {
         supply.setCurrentStock(new BigDecimal("1000.000"));

@@ -42,6 +42,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -108,6 +109,10 @@ class OrderServiceTest
         item.setUnitCost(new BigDecimal("10.00"));
         item.setStatus(OrderItemStatus.RECEIVED);
         item.setSubmittedAt(LocalDateTime.now());
+        var ticket = new OrderTicket();
+        ticket.setAccount(account);
+        ticket.setWaiterId(WAITER_ID);
+        item.setTicket(ticket);
 
         when(accountRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(Optional.of(account));
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
@@ -410,8 +415,23 @@ class OrderServiceTest
     {
         orderService.delete(ITEM_ID);
 
-        verify(inventoryService).reverseSaleConsumption(eq(ITEM_ID), eq(WAITER_ID));
-        verify(itemRepository).delete(item);
+        var orden = inOrder(inventoryService, itemRepository);
+        orden.verify(inventoryService).reverseSaleConsumption(eq(ITEM_ID), eq(WAITER_ID));
+        orden.verify(inventoryService).detachOrderItem(ITEM_ID);
+        orden.verify(itemRepository).delete(item);
+    }
+
+    @Test
+    void deleteItemDeCuentaAnuladaFalla()
+    {
+        account.setStatus(AccountStatus.CANCELLED);
+
+        assertThatThrownBy(() -> orderService.delete(ITEM_ID))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ACCOUNT_NOT_OPEN);
+        verify(inventoryService, never()).reverseSaleConsumption(anyLong(), anyLong());
+        verify(itemRepository, never()).delete(item);
     }
 
     @Test
@@ -434,6 +454,18 @@ class OrderServiceTest
 
         assertThat(item.getStatus()).isEqualTo(OrderItemStatus.UNAVAILABLE);
         verify(inventoryService).reverseSaleConsumption(eq(ITEM_ID), eq(WAITER_ID));
+    }
+
+    @Test
+    void updateStatusDeCuentaAnuladaFalla()
+    {
+        account.setStatus(AccountStatus.CANCELLED);
+
+        assertThatThrownBy(() -> orderService.updateStatus(ITEM_ID,
+                new UpdateOrderItemStatusDTO(OrderItemStatus.IN_PREPARATION)))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.ACCOUNT_NOT_OPEN);
     }
 
     @Test

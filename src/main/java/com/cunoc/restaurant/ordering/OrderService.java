@@ -125,6 +125,7 @@ public class OrderService
     public OrderItemView updateStatus(Long orderItemId, UpdateOrderItemStatusDTO request)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
         var currentStatus = item.getStatus();
         var targetStatus = request.status();
 
@@ -185,13 +186,15 @@ public class OrderService
     public void delete(Long orderItemId)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
 
         if (item.getStatus() != OrderItemStatus.RECEIVED)
             throw new BusinessException(ErrorCode.ORDER_ITEM_IN_PREPARATION,
                     "Solo se pueden eliminar ítems en estado RECIBIDO. Estado actual: " + item.getStatus() + ".");
 
-        // Devolver stock al inventario
+        // Devolver stock al inventario y soltar la FK antes de borrar la fila.
         inventoryService.reverseSaleConsumption(orderItemId, CurrentUser.id());
+        inventoryService.detachOrderItem(orderItemId);
 
         // Eliminar modificadores asociados
         modifierRepository.findByOrderItemOrderItemId(orderItemId)
@@ -208,6 +211,7 @@ public class OrderService
     public void markUnavailable(Long orderItemId)
     {
         var item = itemForUpdate(orderItemId);
+        requireLiveAccount(item);
 
         if (item.getStatus() != OrderItemStatus.RECEIVED)
             throw new BusinessException(ErrorCode.ORDER_ITEM_IN_PREPARATION,
@@ -403,5 +407,18 @@ public class OrderService
         return itemRepository.findById(orderItemId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.ORDER_ITEM_NOT_FOUND,
                         "No existe el ítem " + orderItemId + "."));
+    }
+
+    private void requireLiveAccount(OrderItem item)
+    {
+        var ticket = item.getTicket();
+        var account = ticket == null ? null : ticket.getAccount();
+        if (account == null)
+            return;
+        if (account.getStatus() != AccountStatus.OPEN
+                && account.getStatus() != AccountStatus.BILL_REQUESTED)
+            throw new BusinessException(ErrorCode.ACCOUNT_NOT_OPEN,
+                    "No se puede operar un ítem de una cuenta que no está abierta. Estado: "
+                            + account.getStatus() + ".");
     }
 }
