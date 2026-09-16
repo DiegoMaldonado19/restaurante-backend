@@ -111,7 +111,12 @@ class OrderServiceTest
 
             return saved;
         });
-        when(ticketRepository.save(any(OrderTicket.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(ticketRepository.save(any(OrderTicket.class))).thenAnswer(inv ->
+        {
+            OrderTicket saved = inv.getArgument(0);
+            if (saved.getOrderTicketId() == null) saved.setOrderTicketId(81L);
+            return saved;
+        });
         when(modifierRepository.save(any(OrderItemModifier.class))).thenAnswer(inv -> inv.getArgument(0));
         when(modifierRepository.findByOrderItemOrderItemId(anyLong())).thenReturn(List.of());
 
@@ -145,6 +150,12 @@ class OrderServiceTest
 
         assertThat(result).isNotNull();
         assertThat(result.accountId()).isEqualTo(ACCOUNT_ID);
+        assertThat(result.orderTicketId()).isEqualTo(81L);
+        assertThat(result.items()).isNotEmpty();
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).dishName()).isEqualTo("Hamburguesa");
+        assertThat(result.items().get(0).quantity()).isEqualTo(2);
+        assertThat(result.items().get(0).unitPrice()).isEqualByComparingTo("50.00");
         verify(inventoryService).registerSaleConsumption(any(), anyLong(), anyLong());
 
         // El precio de venta se congela en el item. Antes quedaba en cero y toda

@@ -109,6 +109,7 @@ public class OrderService
             item.setSubmittedAt(LocalDateTime.now());
 
             itemRepository.save(item);
+            ticket.getOrderItems().add(item);
 
             // Guardar modificadores
             if (line.modifierIds() != null)
