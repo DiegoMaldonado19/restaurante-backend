@@ -29,3 +29,6 @@ Bean Validation with Hibernate validator.
 
 ### Java Mail Sender
 Send email using Java Mail and Spring Framework's JavaMailSender.
+
+
+### Testing deployment
